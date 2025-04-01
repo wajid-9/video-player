@@ -1,0 +1,228 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/relativeLayoutRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <com.google.android.exoplayer2.ui.PlayerView
+        android:id="@+id/playerView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_centerInParent="false" />
+
+    <ImageView
+        android:id="@+id/playImageView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:src="@android:drawable/ic_media_play"
+        android:layout_centerInParent="true"
+        android:visibility="gone" />
+
+    <LinearLayout
+        android:id="@+id/topControls"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:layout_alignParentTop="true"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/videoTitleTextView"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="Video Title"
+            android:textColor="@android:color/white"
+            android:textSize="18sp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:visibility="gone" />
+
+        <ImageButton
+            android:id="@+id/subtitleButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/subtitles"
+        android:contentDescription="Subtitles"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:scaleType="centerInside"
+        android:padding="8dp"
+        android:visibility="gone" />
+
+        <ImageButton
+            android:id="@+id/audioButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/audiotrack"
+        android:contentDescription="Audio"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:scaleType="centerInside"
+        android:padding="8dp"
+        android:visibility="gone" />
+
+        <ImageButton
+            android:id="@+id/fullScreenButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@android:drawable/ic_menu_zoom"
+            android:contentDescription="Full Screen"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:scaleType="centerInside"
+            android:padding="8dp"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/controlsLayout"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:layout_alignParentBottom="true">
+
+        <LinearLayout
+            android:id="@+id/bottomControls"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:padding="8dp"
+            android:background="#80000000"
+            android:visibility="gone">
+
+            <TextView
+                android:id="@+id/lefttime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0:00"
+                android:textColor="@android:color/white"
+                android:layout_gravity="center_vertical" />
+
+            <SeekBar
+                android:id="@+id/videoSeekBar"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="100"
+                android:layout_marginStart="8dp"
+                android:layout_marginEnd="8dp" />
+
+            <TextView
+                android:id="@+id/righttime"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0:00"
+                android:textColor="@android:color/white"
+                android:layout_gravity="center_vertical" />
+
+            <SeekBar
+                android:id="@+id/speedSeekBar"
+                android:layout_width="100dp"
+                android:layout_height="wrap_content"
+                android:max="40"
+                android:layout_marginStart="8dp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/subtitleTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="#FFFF00"
+        android:textSize="18sp"
+        android:background="#64000000"
+        android:padding="4dp"
+        android:layout_above="@id/controlsLayout"
+        android:layout_centerHorizontal="true"
+        android:maxLines="3"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/seekTimeTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="0:00"
+        android:textColor="@android:color/white"
+        android:textSize="24sp"
+        android:background="#80000000"
+        android:padding="8dp"
+        android:layout_centerInParent="true"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/twoxTimeTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="0:00"
+        android:textColor="@android:color/white"
+        android:layout_marginStart="300dp"
+        android:textSize="24sp"
+        android:background="#00000000"
+        android:padding="8dp"
+        android:layout_alignParentTop="true"
+        android:visibility="gone" />
+
+    <RelativeLayout
+        android:id="@+id/brightnessContainer"
+        android:layout_width="24dp"
+        android:layout_height="wrap_content"
+        android:layout_centerVertical="true"
+        android:layout_alignParentStart="true"
+        android:layout_marginStart="16dp"
+        android:visibility="gone">
+        <com.lukelorusso.verticalseekbar.VerticalSeekBar
+            android:id="@+id/BrightnessSeekBar"
+            android:layout_width="160dp"
+            android:layout_height="280dp"/>
+        <TextView
+            android:id="@+id/brightnessText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="50%"
+            android:textColor="@android:color/white"
+            android:layout_below="@id/BrightnessSeekBar"
+            android:layout_centerHorizontal="true" />
+    </RelativeLayout>
+
+    <RelativeLayout
+        android:id="@+id/volumeContainer"
+        android:layout_width="24dp"
+        android:layout_height="wrap_content"
+        android:layout_centerVertical="true"
+        android:layout_alignParentEnd="true"
+        android:layout_marginEnd="16dp"
+        android:visibility="gone">
+        <com.lukelorusso.verticalseekbar.VerticalSeekBar
+            android:id="@+id/VolumeSeekBar"
+            android:layout_width="160dp"
+            android:layout_height="280dp"/>
+    <TextView
+        android:id="@+id/volumeText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="50%"
+        android:textColor="@android:color/white"
+        android:textSize="12sp"
+        android:layout_below="@id/VolumeSeekBar"
+        android:layout_centerHorizontal="true"/>
+</RelativeLayout>
+
+    <View
+        android:id="@+id/brightnessOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#00000000"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tvVolumeValue"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="50%"
+        android:textColor="@android:color/white"
+        android:layout_centerHorizontal="true"
+        android:layout_below="@id/volumeContainer"
+        android:visibility="gone" />
+</RelativeLayout>

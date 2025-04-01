@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Video Player</string>
+    <string-array name="view_modes">
+        <item>List</item>
+        <item>Grid</item>
+    </string-array>
+</resources>
