@@ -1,15 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:id="@+id/relativeLayoutRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@android:color/black">
-
     <com.google.android.exoplayer2.ui.PlayerView
         android:id="@+id/playerView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_centerInParent="false" />
+        android:layout_gravity="center"
+        app:surface_type="surface_view"
+    app:resize_mode="fit"
+    app:use_controller="false" />
+
 
     <ImageView
         android:id="@+id/playImageView"
@@ -39,7 +43,16 @@
             android:ellipsize="end"
             android:maxLines="1"
             android:visibility="gone" />
-
+        <ImageButton
+            android:id="@+id/zoomButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:src="@drawable/zoom"
+            android:contentDescription="Zoom options"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:scaleType="centerInside"
+            android:padding="8dp"
+            android:visibility="gone" />
         <ImageButton
             android:id="@+id/subtitleButton"
             android:layout_width="48dp"
