@@ -85,8 +85,6 @@ class MainActivity : AppCompatActivity() {
     private var isSpeedIncreased = false
     private var areControlsVisible = false
     private var scaleFactor = 1.0f
-    private val maxScale = 6.0f  // Maximum zoom level (3x)
-    private val minScale = 1.0f  // Minimum zoom level (normal size)
     private var baseSubtitleSize = 18f
     private val sensitivityFactor = 1.0f
     private val hideControlsDelay = 3000L
