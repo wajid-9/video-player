@@ -66,7 +66,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var playImageView: ImageView
     private lateinit var audioManager: AudioManager
     private lateinit var tvVolumeValue: TextView
-    private lateinit var zoomController: ZoomController
+
     // New UI components for brightness/volume controls
     private lateinit var brightnessContainer: RelativeLayout
     private lateinit var volumeContainer: RelativeLayout
@@ -78,11 +78,15 @@ class MainActivity : AppCompatActivity() {
 
     // Gesture detectors
     private lateinit var gestureDetector: GestureDetectorCompat
+    private lateinit var scaleGestureDetector: ScaleGestureDetector
+
     // State variables
     private var isFullScreen = false
     private var isSpeedIncreased = false
     private var areControlsVisible = false
-    // Minimum zoom level (normal size)
+    private var scaleFactor = 1.0f
+    private val maxScale = 6.0f  // Maximum zoom level (3x)
+    private val minScale = 1.0f  // Minimum zoom level (normal size)
     private var baseSubtitleSize = 18f
     private val sensitivityFactor = 1.0f
     private val hideControlsDelay = 3000L
@@ -237,7 +241,7 @@ class MainActivity : AppCompatActivity() {
         volumeContainer.visibility = View.GONE
         brightnessOverlay.visibility = View.GONE
         tvVolumeValue.visibility = View.GONE
-        zoomController = ZoomController(playerView)
+
         brightnessSeekBar.maxValue = 100
         seekBarVolume.maxValue = 200
         val initialSystemVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
@@ -479,25 +483,86 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
-        playerView.setOnTouchListener { _, event ->
-            // Handle multi-touch zoom gestures first
-            if (event.pointerCount >= 2) {
-                zoomController.scaleGestureDetector.onTouchEvent(event)
-                return@setOnTouchListener true
+        scaleGestureDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            private var initialScaleFactor = 1.0f
+            private var focusX = 0f
+            private var focusY = 0f
+
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                initialScaleFactor = scaleFactor
+                focusX = detector.focusX
+                focusY = detector.focusY
+                return true
             }
 
-            // Handle single-touch gestures
-            gestureDetector.onTouchEvent(event)
-            if (event.action == MotionEvent.ACTION_UP && isSpeedIncreased) {
-                player.playbackParameters = PlaybackParameters(1.0f)
-                isSpeedIncreased = false
-                twoxtimeTextview.visibility = View.GONE
-                handler.removeCallbacks(hideSeekTimeRunnable)
-                handler.postDelayed(hideSeekTimeRunnable, hideControlsDelay)
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                scaleFactor = initialScaleFactor * detector.scaleFactor
+                scaleFactor = max(1.0f, min(scaleFactor, 3.0f)) // Limit scale between 1x and 3x
+
+                // Calculate the new position to keep the focus point stable
+                val scaleChange = scaleFactor / playerView.scaleX
+                val offsetX = (focusX - playerView.left) * (1 - scaleChange)
+                val offsetY = (focusY - playerView.top) * (1 - scaleChange)
+
+                playerView.scaleX = scaleFactor
+                playerView.scaleY = scaleFactor
+                playerView.translationX += offsetX
+                playerView.translationY += offsetY
+
+                // Adjust subtitle size
+                subtitleTextView.textSize = baseSubtitleSize * scaleFactor
+                subtitleTextView.requestLayout()
+
+                return true
+            }
+
+            override fun onScaleEnd(detector: ScaleGestureDetector) {
+                // Ensure the view stays within bounds after scaling
+                adjustViewPosition()
+            }
+        })
+
+        playerView.setOnTouchListener { _, event ->
+            if (event.pointerCount == 1) {
+                gestureDetector.onTouchEvent(event)
+                if (event.action == MotionEvent.ACTION_UP && isSpeedIncreased) {
+                    player.playbackParameters = PlaybackParameters(1.0f)
+                    isSpeedIncreased = false
+                    twoxtimeTextview.visibility = View.GONE
+                    handler.removeCallbacks(hideSeekTimeRunnable)
+                    handler.postDelayed(hideSeekTimeRunnable, hideControlsDelay)
+                }
+            } else if (event.pointerCount >= 2) {
+                scaleGestureDetector.onTouchEvent(event)
             }
             true
-        }}
+        }
+    }
 
+    private fun adjustViewPosition() {
+        playerView.post {
+            val screenWidth = resources.displayMetrics.widthPixels.toFloat()
+            val screenHeight = resources.displayMetrics.heightPixels.toFloat()
+            val scaledWidth = playerView.width * scaleFactor
+            val scaledHeight = playerView.height * scaleFactor
+
+            // Calculate current position including translation
+            val currentX = playerView.x + playerView.translationX
+            val currentY = playerView.y + playerView.translationY
+
+            // Calculate bounds
+            val minX = screenWidth - scaledWidth
+            val minY = screenHeight - scaledHeight
+
+            // Constrain within screen bounds
+            val constrainedX = max(minX, min(0f, currentX))
+            val constrainedY = max(minY, min(0f, currentY))
+
+            // Apply the constrained position
+            playerView.translationX = constrainedX - playerView.x
+            playerView.translationY = constrainedY - playerView.y
+        }
+    }
     private fun setupSeekBars() {
         videoSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -1019,9 +1084,20 @@ class MainActivity : AppCompatActivity() {
             windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
             fullScreenButton.setImageResource(android.R.drawable.ic_menu_zoom)
-            zoomController.resetZoom()
+
+            scaleFactor = 1.0f
+            playerView.animate()
+                .scaleX(1f)
+                .scaleY(1f)
+                .translationX(0f)
+                .translationY(0f)
+                .setDuration(200)
+                .start()
+
+            subtitleTextView.textSize = baseSubtitleSize
         }
     }
+
     private fun toggleFullScreen() {
         isFullScreen = !isFullScreen
         setFullScreenMode(isFullScreen)
