@@ -1,13 +1,14 @@
 package com.example.videoplayer
 
 import android.Manifest
-import android.app.Activity
+import android.annotation.SuppressLint
 import android.app.Dialog
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.PorterDuff
+import android.graphics.RectF
 import android.media.AudioManager
 import android.media.audiofx.BassBoost
 import android.net.Uri
@@ -17,6 +18,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
 import android.util.Log
+import android.util.MutableFloat
 import android.view.*
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
@@ -73,13 +75,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var volumeContainer: RelativeLayout
     private lateinit var brightnessText: TextView
     private lateinit var volumeText: TextView
+    private lateinit var scaleGestureDetector: ScaleGestureDetector
 
     // Audio effect for volume boost
     private var bassBoost: BassBoost? = null
 
     // Gesture detectors
     private lateinit var gestureDetector: GestureDetectorCompat
-
+private lateinit var zoomlayout: RelativeLayout
+private lateinit var zoomcontainer: RelativeLayout
+private lateinit var zoomtext: TextView
+private lateinit var ScaleGestureDetector: ScaleGestureDetector
+    private val scaleFactor = MutableFloat(1.0f)     // Other variables
     // State variables
     private var isFullScreen = false
     private var isSpeedIncreased = false
@@ -136,7 +143,16 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-
+    private fun resetZoom() {
+        playerView.apply {
+            pivotX = width / 2f
+            pivotY = height / 2f
+            scaleX = 1.0f
+            scaleY = 1.0f
+            translationX = 0f
+            translationY = 0f
+        }
+    }
     private val hideControlsRunnable = Runnable { hideControls() }
     private val hideBrightnessOverlayRunnable = Runnable {
         brightnessOverlay.visibility = View.GONE
@@ -151,6 +167,7 @@ class MainActivity : AppCompatActivity() {
         twoxtimeTextview.visibility = View.GONE
     }
     private fun applyScaleMode(mode: VideoScaleMode) {
+        resetZoom()
         currentScaleMode = mode
 
         // Try multiple ways to find the content frame
@@ -166,12 +183,17 @@ class MainActivity : AppCompatActivity() {
                 }
                 VideoScaleMode.FIT -> {
                     contentFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    contentFrame.setAspectRatio(0f)
+                    contentFrame.setAspectRatio(16f / 9f)
                 }
                 VideoScaleMode.ORIGINAL -> {
-                    contentFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH
-                    contentFrame.setAspectRatio(0f)
+                    contentFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+                    val videoWidth = player.videoFormat?.width ?: 0
+                    val videoHeight = player.videoFormat?.height ?: 0
+                    if (videoWidth > 0 && videoHeight > 0) {
+                        contentFrame.setAspectRatio(videoWidth.toFloat() / videoHeight.toFloat())
+                    }
                 }
+
                 VideoScaleMode.STRETCH -> {
                     contentFrame.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
                     contentFrame.setAspectRatio(0f)
@@ -289,6 +311,9 @@ class MainActivity : AppCompatActivity() {
         volumeContainer = findViewById(R.id.volumeContainer)
         brightnessText = findViewById(R.id.brightnessText)
         volumeText = findViewById(R.id.volumeText)
+        zoomlayout = findViewById(R.id.zoom_layout)
+        zoomcontainer = findViewById(R.id.zoomContainer)
+        zoomtext = findViewById(R.id.zoomText)
 
         bottomControls.visibility = View.GONE
         fullScreenButton.visibility = View.GONE
@@ -449,6 +474,7 @@ class MainActivity : AppCompatActivity() {
             .build()
     }
 
+    @SuppressLint("ClickableViewAccessibility")
     private fun initGestureDetectors() {
         gestureDetector = GestureDetectorCompat(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
@@ -582,8 +608,54 @@ class MainActivity : AppCompatActivity() {
         })
 
 
+        // Variables for panning
+        var isPanning = false
+        var lastTouchX = 0f
+        var lastTouchY = 0f
+        var isZooming = false
+
+        // Initialize ScaleGestureDetector for pinch-to-zoom
+        scaleGestureDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScaleBegin(detector: ScaleGestureDetector): Boolean {
+                // Set the pivot point to the center of the video content
+                val videoBounds = calculateVideoContentBounds()
+                playerView.pivotX = videoBounds.centerX()
+                playerView.pivotY = videoBounds.centerY()
+                isZooming = true
+                return true
+            }
+
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                scaleFactor.value *= detector.scaleFactor
+                scaleFactor.value = scaleFactor.value.coerceIn(0.5f, 6.0f) // Limit zoom between 0.5x and 6.0x
+
+                // Apply scaling to playerView
+                playerView.scaleX = scaleFactor.value
+                playerView.scaleY = scaleFactor.value
+
+                // Center the video content after scaling
+                centerVideoContent()
+
+                // Show zoom percentage
+                val percentage = (scaleFactor.value * 100).toInt()
+                zoomtext.text = "$percentage%"
+                zoomcontainer.visibility = View.VISIBLE
+
+                return true
+            }
+
+            override fun onScaleEnd(detector: ScaleGestureDetector) {
+                isZooming = false
+                // Hide zoom percentage after scaling ends
+                handler.postDelayed({ zoomcontainer.visibility = View.GONE }, 500)
+            }
+        })
+
+
 
         playerView.setOnTouchListener { _, event ->
+            scaleGestureDetector.onTouchEvent(event)
+
             if (event.pointerCount == 1) {
                 gestureDetector.onTouchEvent(event)
                 if (event.action == MotionEvent.ACTION_UP && isSpeedIncreased) {
@@ -593,10 +665,93 @@ class MainActivity : AppCompatActivity() {
                     handler.removeCallbacks(hideSeekTimeRunnable)
                     handler.postDelayed(hideSeekTimeRunnable, hideControlsDelay)
                 }
+
             }
             true
+        }}
+    private fun calculateVideoContentBounds(): RectF {
+        val playerViewWidth = playerView.width.toFloat()
+        val playerViewHeight = playerView.height.toFloat()
+
+        // Get the video aspect ratio
+        val videoAspectRatio = if (player.videoFormat != null) {
+            player.videoFormat!!.width.toFloat() / player.videoFormat!!.height.toFloat()
+        } else {
+            16f / 9f // Default to 16:9 if video format is not available
         }
+
+        val viewAspectRatio = playerViewWidth / playerViewHeight
+
+        var videoWidth: Float
+        var videoHeight: Float
+
+        // Calculate video dimensions based on the current scale mode
+        if (currentScaleMode == VideoScaleMode.FILL || currentScaleMode == VideoScaleMode.STRETCH) {
+            // In FILL or STRETCH mode, the video content takes the full playerView dimensions
+            videoWidth = playerViewWidth
+            videoHeight = playerViewHeight
+        } else {
+            // In FIT or other aspect ratio modes, calculate the video dimensions
+            if (viewAspectRatio > videoAspectRatio) {
+                // Letterboxed on the sides (black bars on left and right)
+                videoHeight = playerViewHeight
+                videoWidth = videoHeight * videoAspectRatio
+            } else {
+                // Letterboxed on top and bottom (black bars on top and bottom)
+                videoWidth = playerViewWidth
+                videoHeight = videoWidth / videoAspectRatio
+            }
+        }
+
+        // Calculate the position of the video content within playerView
+        val left = (playerViewWidth - videoWidth) / 2
+        val top = (playerViewHeight - videoHeight) / 2
+        val right = left + videoWidth
+        val bottom = top + videoHeight
+
+        return RectF(left, top, right, bottom)
     }
+
+    private fun centerVideoContent() {
+        val videoBounds = calculateVideoContentBounds()
+        val playerViewWidth = playerView.width.toFloat()
+        val playerViewHeight = playerView.height.toFloat()
+
+        // Calculate the scaled dimensions of the video content
+        val scaledWidth = videoBounds.width() * scaleFactor.value
+        val scaledHeight = videoBounds.height() * scaleFactor.value
+
+        // Calculate the new position to center the scaled video content
+        val newLeft = (playerViewWidth - scaledWidth) / 2
+        val newTop = (playerViewHeight - scaledHeight) / 2
+
+        // Adjust translations to center the video
+        playerView.translationX = (newLeft - videoBounds.left * scaleFactor.value).coerceAtLeast(0f)
+        playerView.translationY = (newTop - videoBounds.top * scaleFactor.value).coerceAtLeast(0f)
+    }
+
+    private fun constrainPanning() {
+        val videoBounds = calculateVideoContentBounds()
+        val playerViewWidth = playerView.width.toFloat()
+        val playerViewHeight = playerView.height.toFloat()
+
+        // Calculate the scaled dimensions of the video content
+        val scaledWidth = videoBounds.width() * scaleFactor.value
+        val scaledHeight = videoBounds.height() * scaleFactor.value
+
+        // Calculate the bounds for panning
+        val minX = playerViewWidth - scaledWidth - videoBounds.left * scaleFactor.value
+        val maxX = -videoBounds.left * scaleFactor.value
+        val minY = playerViewHeight - scaledHeight - videoBounds.top * scaleFactor.value
+        val maxY = -videoBounds.top * scaleFactor.value
+
+        // Constrain translationX and translationY
+        playerView.translationX = playerView.translationX.coerceIn(minX, 0f)
+        playerView.translationY = playerView.translationY.coerceIn(minY, 0f)
+    }
+
+
+
 
 
     private fun setupSeekBars() {
@@ -1059,6 +1214,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
+
 
     private fun playVideo(uri: Uri) {
         try {

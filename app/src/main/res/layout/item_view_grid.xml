@@ -8,8 +8,7 @@
         android:id="@+id/videoThumbnail"
         android:layout_width="match_parent"
         android:layout_height="120dp"
-        android:scaleType="centerCrop"
-        android:src="@drawable/play" />
+        android:scaleType="centerCrop" />
 
     <TextView
         android:id="@+id/videoTitle"
