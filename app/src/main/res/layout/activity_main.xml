@@ -4,17 +4,44 @@
     android:id="@+id/relativeLayoutRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/black">
-    <com.google.android.exoplayer2.ui.PlayerView
-        android:id="@+id/playerView"
+    android:background="@android:color/black"
+    android:clipChildren="false"
+    android:clipToPadding="false">
+    <FrameLayout
+        android:id="@+id/videoContainer"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_gravity="center"
-        app:surface_type="surface_view"
-    app:resize_mode="fit"
-    app:use_controller="false" />
+        android:clipChildren="false"
+        android:clipToPadding="false">
 
-
+        <com.google.android.exoplayer2.ui.PlayerView
+            android:id="@+id/playerView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_gravity="center"
+            app:surface_type="surface_view"
+            app:resize_mode="fit"
+            app:use_controller="false"
+            app:player_layout_id="@layout/exo_layout_view"/>
+    </FrameLayout>
+    <RelativeLayout
+        android:id="@+id/zoomContainer"
+        android:layout_width="24dp"
+        android:layout_height="wrap_content"
+        android:layout_centerVertical="true"
+        android:layout_alignParentEnd="true"
+        android:layout_marginEnd="64dp"
+        android:visibility="gone">
+        <TextView
+            android:id="@+id/zoomText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="100%"
+            android:textColor="@android:color/white"
+            android:textSize="12sp"
+            android:layout_below="@id/zoomContainer"
+            android:layout_centerHorizontal="true" />
+    </RelativeLayout>
     <ImageView
         android:id="@+id/playImageView"
         android:layout_width="wrap_content"
@@ -189,6 +216,7 @@
             android:id="@+id/BrightnessSeekBar"
             android:layout_width="160dp"
             android:layout_height="280dp"/>
+
         <TextView
             android:id="@+id/brightnessText"
             android:layout_width="wrap_content"

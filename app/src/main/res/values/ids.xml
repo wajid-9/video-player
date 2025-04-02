@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <item name="exo_content_frame" type="id" />
+    <item name="zoomText" type="id" />
+    <item name="zoomContainer" type="id" />
 </resources>
