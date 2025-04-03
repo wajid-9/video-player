@@ -40,6 +40,21 @@
         android:layout_centerInParent="true"
         android:visibility="gone" />
 
+    <TextView
+        android:id="@+id/continueTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Continue from 0:00?"
+        android:textColor="@android:color/holo_blue_light"
+        android:textSize="18sp"
+        android:background="#00000000"
+        android:padding="8dp"
+        android:layout_alignParentBottom="true"
+        android:layout_marginBottom="20dp"
+        android:visibility="gone"
+        android:clickable="true"
+        android:focusable="true" />
+
     <LinearLayout
         android:id="@+id/topControls"
         android:layout_width="match_parent"
@@ -138,9 +153,9 @@
                 android:max="100"
                 android:thumb="@drawable/custom_seekbar_thumb"
                 android:progressTint="#0F1BBD"
-            android:backgroundTint="#809393D0"
-            android:thumbTint="#819EBA"
-            android:padding="4dp" />
+                android:backgroundTint="#809393D0"
+                android:thumbTint="#819EBA"
+                android:padding="4dp" />
 
             <TextView
                 android:id="@+id/righttime"
@@ -159,11 +174,12 @@
                 android:max="40"
                 android:thumb="@drawable/custom_seekbar_thumb"
                 android:progressTint="#566EAB"
-            android:backgroundTint="#80FFFFFF"
-            android:thumbTint="#FF5722"
-            android:padding="4dp" />
+                android:backgroundTint="#80FFFFFF"
+                android:thumbTint="#FF5722"
+                android:padding="4dp" />
         </LinearLayout>
     </LinearLayout>
+
     <TextView
         android:id="@+id/skipDirectionTextView"
         android:layout_width="wrap_content"
@@ -175,6 +191,7 @@
         android:padding="8dp"
         android:layout_centerVertical="true"
         android:visibility="gone" />
+
     <TextView
         android:id="@+id/subtitleTextView"
         android:layout_width="wrap_content"

@@ -4,4 +4,13 @@
         <item>List</item>
         <item>Grid</item>
     </string-array>
+    <string-array name="view_mode_options">
+        <item>List View</item>
+        <item>Grid View</item>
+    </string-array>
+
+    <string-array name="group_mode_options">
+        <item>No Grouping</item>
+        <item>Group by Name</item>
+    </string-array>
 </resources>
