@@ -7,22 +7,19 @@
     android:clipChildren="false"
     android:clipToPadding="false">
 
-
-        <com.google.android.exoplayer2.ui.PlayerView
-            android:id="@+id/playerView"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            app:surface_type="surface_view"
-            />
+    <com.google.android.exoplayer2.ui.PlayerView
+        android:id="@+id/playerView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:surface_type="surface_view" />
 
     <RelativeLayout
         android:id="@+id/zoomContainer"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
+        android:layout_width="100dp"
+        android:layout_height="100dp"
         android:layout_centerVertical="true"
-        android:layout_alignParentEnd="true"
-        android:layout_marginEnd="16dp"
-        android:background="#80000000"
+        android:layout_centerInParent="true"
+        android:background="#00000000"
         android:padding="4dp"
         android:visibility="gone">
         <TextView
@@ -31,7 +28,7 @@
             android:layout_height="wrap_content"
             android:text="100%"
             android:textColor="@android:color/white"
-            android:textSize="12sp"
+            android:textSize="30sp"
             android:layout_centerInParent="true" />
     </RelativeLayout>
 
@@ -112,16 +109,17 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:layout_alignParentBottom="true">
+        android:layout_alignParentBottom="true"
+        android:padding="8dp"
+        android:background="#00000000">
 
         <LinearLayout
             android:id="@+id/bottomControls"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:padding="8dp"
-            android:background="#80000000"
-            android:visibility="gone">
+            android:gravity="center_vertical"
+            android:padding="4dp">
 
             <TextView
                 android:id="@+id/lefttime"
@@ -129,7 +127,8 @@
                 android:layout_height="wrap_content"
                 android:text="0:00"
                 android:textColor="@android:color/white"
-                android:layout_gravity="center_vertical" />
+                android:textSize="16sp"
+                android:padding="4dp" />
 
             <SeekBar
                 android:id="@+id/videoSeekBar"
@@ -137,8 +136,11 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:max="100"
-                android:layout_marginStart="8dp"
-                android:layout_marginEnd="8dp" />
+                android:thumb="@drawable/custom_seekbar_thumb"
+                android:progressTint="#0F1BBD"
+            android:backgroundTint="#809393D0"
+            android:thumbTint="#819EBA"
+            android:padding="4dp" />
 
             <TextView
                 android:id="@+id/righttime"
@@ -146,17 +148,33 @@
                 android:layout_height="wrap_content"
                 android:text="0:00"
                 android:textColor="@android:color/white"
-                android:layout_gravity="center_vertical" />
+                android:textSize="16sp"
+                android:padding="4dp"
+                android:gravity="end" />
 
             <SeekBar
                 android:id="@+id/speedSeekBar"
-                android:layout_width="100dp"
+                android:layout_width="80dp"
                 android:layout_height="wrap_content"
                 android:max="40"
-                android:layout_marginStart="8dp" />
+                android:thumb="@drawable/custom_seekbar_thumb"
+                android:progressTint="#566EAB"
+            android:backgroundTint="#80FFFFFF"
+            android:thumbTint="#FF5722"
+            android:padding="4dp" />
         </LinearLayout>
     </LinearLayout>
-
+    <TextView
+        android:id="@+id/skipDirectionTextView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="-10s"
+        android:textColor="@android:color/white"
+        android:textSize="24sp"
+        android:background="#80000000"
+        android:padding="8dp"
+        android:layout_centerVertical="true"
+        android:visibility="gone" />
     <TextView
         android:id="@+id/subtitleTextView"
         android:layout_width="wrap_content"

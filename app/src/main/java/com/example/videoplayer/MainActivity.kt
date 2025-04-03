@@ -16,7 +16,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.OpenableColumns
 import android.util.Log
-import android.util.MutableFloat
+import android.media.audiofx.LoudnessEnhancer
 import android.view.*
 import android.widget.*
 import androidx.appcompat.app.AlertDialog
@@ -38,9 +38,11 @@ import com.google.android.exoplayer2.upstream.DefaultDataSource
 import com.lukelorusso.verticalseekbar.VerticalSeekBar
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import kotlin.jvm.java
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import android.media.audiofx.DynamicsProcessing
 
 class MainActivity : AppCompatActivity() {
 
@@ -74,18 +76,19 @@ class MainActivity : AppCompatActivity() {
     private lateinit var brightnessText: TextView
     private lateinit var volumeText: TextView
     private lateinit var scaleGestureDetector: ScaleGestureDetector
+    private var dynamicsProcessing: DynamicsProcessing? = null
 
     // Audio effect for volume boost
     private var bassBoost: BassBoost? = null
     private var scaleFactor = 1.0f
-    private val minScale = 0.5f
-    private val maxScale = 4.0f
+    private val minScale = 0.25f
+    private val maxScale = 6.0f
     private var isZooming = false
     private var focusX = 0f
     private var focusY = 0f
     // Gesture detectors
     private lateinit var gestureDetector: GestureDetectorCompat
-    private lateinit var zoomlayout: RelativeLayout
+    private var loudnessEnhancer: LoudnessEnhancer? = null
     private lateinit var zoomcontainer: RelativeLayout
     private lateinit var zoomtext: TextView
    // State variables
@@ -95,6 +98,8 @@ class MainActivity : AppCompatActivity() {
     private var baseSubtitleSize = 18f
     private val sensitivityFactor = 1.0f
     private val hideControlsDelay = 3000L
+    private lateinit var skipDirectionTextView: TextView
+    private val hideSkipDirectionRunnable = Runnable { skipDirectionTextView.visibility = View.GONE }
 
     // Subtitle related
     private var subtitles: List<SubtitleEntry> = emptyList()
@@ -120,7 +125,7 @@ class MainActivity : AppCompatActivity() {
         private const val SUBTITLE_COLOR_RED = Color.RED
         private const val SUBTITLE_COLOR_GREEN = Color.GREEN
         private const val SUBTITLE_COLOR_BLUE = Color.BLUE
-        private const val SUBTITLE_SIZE_DEFAULT = 20f
+        private const val SUBTITLE_SIZE_DEFAULT = 22f
         private const val SUBTITLE_SIZE_LARGE = 30f
         private const val SUBTITLE_SIZE_SMALL = 19f
     }
@@ -215,7 +220,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         } else {
-            // Fallback to setting resize mode on PlayerView
             playerView.resizeMode = when (mode) {
                 VideoScaleMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                 VideoScaleMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -228,7 +232,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
-
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             window.attributes.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
@@ -279,6 +283,7 @@ class MainActivity : AppCompatActivity() {
         videoSeekBar = findViewById(R.id.videoSeekBar)
         playImageView = findViewById(R.id.playImageView)
         speedSeekBar = findViewById(R.id.speedSeekBar)
+        skipDirectionTextView = findViewById(R.id.skipDirectionTextView)
         brightnessSeekBar = findViewById(R.id.BrightnessSeekBar)
         seekBarVolume = findViewById(R.id.VolumeSeekBar)
         fullScreenButton = findViewById(R.id.fullScreenButton)
@@ -302,7 +307,6 @@ class MainActivity : AppCompatActivity() {
         volumeContainer = findViewById(R.id.volumeContainer)
         brightnessText = findViewById(R.id.brightnessText)
         volumeText = findViewById(R.id.volumeText)
-       // zoomlayout = findViewById(R.id.zoom_layout)
         zoomcontainer = findViewById(R.id.zoomContainer)
         zoomtext = findViewById(R.id.zoomText)
 
@@ -476,12 +480,14 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onLongPress(e: MotionEvent) {
-                isSpeedIncreased = true
-                player.playbackParameters = PlaybackParameters(2.0f)
-                twoxtimeTextview.text = "2x Speed"
-                twoxtimeTextview.visibility = View.VISIBLE
-                handler.removeCallbacks(hideSeekTimeRunnable)
-                handler.postDelayed(hideSeekTimeRunnable, hideControlsDelay)
+                if (!isZooming) { // Only trigger long press if not zooming
+                    isSpeedIncreased = true
+                    player.playbackParameters = PlaybackParameters(2.0f)
+                    twoxtimeTextview.text = "2x Speed"
+                    twoxtimeTextview.visibility = View.VISIBLE
+                    handler.removeCallbacks(hideSeekTimeRunnable)
+                    handler.postDelayed(hideSeekTimeRunnable, hideControlsDelay)
+                }
             }
 
             override fun onScroll(
@@ -506,8 +512,6 @@ class MainActivity : AppCompatActivity() {
                         player.seekTo(newPosition)
                         seekTimeTextView.text = formatTime(newPosition / 1000)
                         seekTimeTextView.visibility = View.VISIBLE
-                        handler.removeCallbacks(hideSeekTimeRunnable)
-                        handler.postDelayed(hideSeekTimeRunnable, hideControlsDelay)
                         resetHideControlsTimer()
                     }
                     e1.x < screenWidth / 2 -> {
@@ -540,8 +544,9 @@ class MainActivity : AppCompatActivity() {
 
                         val maxSystemVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
                         if (newProgress <= 100) {
-                            player.volume = newProgress / 100f
-                            val systemVolume = (newProgress / 100f * maxSystemVolume).toInt()
+                            val volumeFraction = if (newProgress == 0) 0f else Math.pow(newProgress / 100.0, 2.0).toFloat()
+                            player.volume = volumeFraction
+                            val systemVolume = (volumeFraction * maxSystemVolume).toInt()
                             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, systemVolume, 0)
                             bassBoost?.setStrength(0)
                         } else {
@@ -560,7 +565,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
-                if (player.duration <= 0) return false
+                if (isZooming || player.duration <= 0) return false
                 val screenWidth = resources.displayMetrics.widthPixels.toFloat()
                 val middleThirdStart = screenWidth / 3
                 val middleThirdEnd = (screenWidth * 2) / 3
@@ -587,11 +592,22 @@ class MainActivity : AppCompatActivity() {
                     else -> min(player.duration, player.currentPosition + amount)
                 }
                 player.seekTo(newPosition)
-                seekTimeTextView.text = formatTime(newPosition / 1000)
-                seekTimeTextView.visibility = View.VISIBLE
-                handler.removeCallbacks(hideSeekTimeRunnable)
-                handler.postDelayed(hideSeekTimeRunnable, hideControlsDelay)
-                resetHideControlsTimer()
+                skipDirectionTextView.text = if (amount < 0) "-10s" else "+10s"
+                val params = skipDirectionTextView.layoutParams as RelativeLayout.LayoutParams
+                if (amount < 0) {
+                    params.addRule(RelativeLayout.ALIGN_PARENT_LEFT)
+                    params.removeRule(RelativeLayout.ALIGN_PARENT_RIGHT)
+                } else {
+                    params.addRule(RelativeLayout.ALIGN_PARENT_RIGHT)
+                    params.removeRule(RelativeLayout.ALIGN_PARENT_LEFT)
+                }
+                skipDirectionTextView.layoutParams = params
+                skipDirectionTextView.visibility = View.VISIBLE
+
+                handler.removeCallbacks(hideSkipDirectionRunnable)
+                handler.postDelayed(hideSkipDirectionRunnable, 1000)
+
+
             }
 
             private fun resetHideControlsTimer() {
@@ -612,17 +628,10 @@ class MainActivity : AppCompatActivity() {
                 scaleFactor = max(minScale, min(scaleFactor, maxScale))
 
                 playerView.videoSurfaceView?.apply {
-                    val relativeFocusX = focusX - left
-                    val relativeFocusY = focusY - top
-
-                    // Apply scale with pivot at gesture focus point
-                    pivotX = relativeFocusX
-                    pivotY = relativeFocusY
                     scaleX = scaleFactor
                     scaleY = scaleFactor
                 }
 
-                // Update zoom percentage
                 updateZoomPercentage()
                 return true
             }
@@ -648,18 +657,26 @@ class MainActivity : AppCompatActivity() {
             if (event.pointerCount == 1) {
                 gestureDetector.onTouchEvent(event)
 
-                // Handle speed increase release
-                if (event.action == MotionEvent.ACTION_UP && isSpeedIncreased) {
-                    player.playbackParameters = PlaybackParameters(1.0f)
-                    isSpeedIncreased = false
-                    twoxtimeTextview.visibility = View.GONE
-                    handler.removeCallbacks(hideSeekTimeRunnable)
-                    handler.postDelayed(hideSeekTimeRunnable, hideControlsDelay)
+                when (event.action) {
+                    MotionEvent.ACTION_UP -> {
+                        // Hide seek time text when touch ends
+                        seekTimeTextView.visibility = View.GONE
+
+                        if (isSpeedIncreased) {
+                            player.playbackParameters = PlaybackParameters(1.0f)
+                            isSpeedIncreased = false
+                            twoxtimeTextview.visibility = View.GONE
+                            handler.removeCallbacks(hideSeekTimeRunnable)
+                        }
+                    }
                 }
             }
             true
         }}
-
+    private fun resetHideControlsTimer1() {
+        handler.removeCallbacks(hideControlsRunnable)
+        handler.postDelayed(hideControlsRunnable, hideControlsDelay)
+    }
     private fun setupSeekBars() {
         videoSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -671,16 +688,19 @@ class MainActivity : AppCompatActivity() {
                     seekTimeTextView.visibility = View.VISIBLE
                     handler.removeCallbacks(hideSeekTimeRunnable)
                     handler.postDelayed(hideSeekTimeRunnable, hideControlsDelay)
+                    resetHideControlsTimer1()
                     if (!isUsingEmbeddedSubtitles) {
                         updateSubtitles(seekPosition)
                     }
+
                 }
+
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {
                 handler.removeCallbacks(updateSeekBarRunnable)
             }
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
-                handler.post(updateSeekBarRunnable)
+                resetHideControlsTimer1()
             }
         })
 
@@ -706,6 +726,16 @@ class MainActivity : AppCompatActivity() {
             handler.postDelayed(hideBrightnessOverlayRunnable, 1000)
         }
 
+
+        player.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(state: Int) {
+                if (state == Player.STATE_READY) {
+                    loudnessEnhancer = LoudnessEnhancer(player.audioSessionId)
+                    loudnessEnhancer?.setTargetGain(1500) // Set to 15dB for natural loudness increase
+                    loudnessEnhancer?.enabled = true
+                }
+            }
+        })
         seekBarVolume.setOnProgressChangeListener { progress ->
             volumeContainer.visibility = View.VISIBLE
             brightnessOverlay.visibility = View.VISIBLE
@@ -713,22 +743,31 @@ class MainActivity : AppCompatActivity() {
             tvVolumeValue.text = "$progress%"
 
             val maxSystemVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val volumeFraction = progress / 100f
+
             if (progress <= 100) {
-                player.volume = progress / 100f
-                val systemVolume = (progress / 100f * maxSystemVolume).toInt()
+                // 🎚️ Natural Loudness Increase (0-100%) - More Perceived Volume
+                player.volume = volumeFraction * 1.2f  // Increase perceived loudness without distortion
+                val systemVolume = (volumeFraction * maxSystemVolume).toInt()
                 audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, systemVolume, 0)
-                bassBoost?.setStrength(0)
+
+                // Enable Loudness Enhancer for better clarity
+                loudnessEnhancer?.setTargetGain(1000) // ~10dB gain for clearer sound
+                loudnessEnhancer?.enabled = true
+
             } else {
+                // 🚀 Maintain 200% without boosting
                 player.volume = 1.0f
                 audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxSystemVolume, 0)
-                val boostLevel = ((progress - 100) / 100f * 1000).toInt()
-                bassBoost?.setStrength(boostLevel.toShort())
+
+                // Keep Loudness Enhancer for clean loudness
+                loudnessEnhancer?.setTargetGain(1500) // Slightly higher gain for clearer sound
+                loudnessEnhancer?.enabled = true
             }
 
             handler.postDelayed(hideVolumeRunnable, 1000)
         }
     }
-
     private fun setupFullScreenButton() {
         fullScreenButton.setOnClickListener { toggleFullScreen() }
     }
@@ -1103,7 +1142,8 @@ class MainActivity : AppCompatActivity() {
                         Toast.makeText(this, "Failed to get video URI", Toast.LENGTH_SHORT).show()
                     }
                 } else {
-                    Toast.makeText(this, "Video selection canceled", Toast.LENGTH_SHORT).show()
+                    val intent = Intent(this, VideoListActivity::class.java)
+                    startActivity(intent)
                 }
             }
             PICK_SUBTITLE_REQUEST -> {
@@ -1278,6 +1318,7 @@ class MainActivity : AppCompatActivity() {
         areControlsVisible = true
         bottomControls.visibility = View.VISIBLE
         fullScreenButton.visibility = View.VISIBLE
+        videoSeekBar.visibility = View.VISIBLE
         subtitleButton.visibility = View.VISIBLE
         audioButton.visibility = View.VISIBLE
         videoTitleTextView.visibility = View.VISIBLE
@@ -1289,6 +1330,7 @@ class MainActivity : AppCompatActivity() {
         areControlsVisible = false
         bottomControls.visibility = View.GONE
         fullScreenButton.visibility = View.GONE
+        videoSeekBar.visibility = View.GONE
         subtitleButton.visibility = View.GONE
         audioButton.visibility = View.GONE
         videoTitleTextView.visibility = View.GONE
@@ -1312,14 +1354,25 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        if (::player.isInitialized) player.playWhenReady = false
+        if (::player.isInitialized) {
+            player.playWhenReady = false
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
         handler.removeCallbacks(hideControlsRunnable)
         handler.removeCallbacks(hideSeekTimeRunnable)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::player.isInitialized && player.playWhenReady) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
+        handler.removeCallbacks(hideSkipDirectionRunnable)
         bassBoost?.release()
         if (::player.isInitialized) {
             player.release()

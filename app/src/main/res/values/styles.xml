@@ -6,7 +6,12 @@
 
 
     <!-- Vertical Progress Bar Style for Brightness/Volume -->
-
+    <style name="DialogButton1" parent="Widget.AppCompat.Button.Colored">
+        <item name="android:textColor">@android:color/white</item>
+        <item name="colorButtonNormal">@color/colorPrimary</item>
+        <item name="android:minWidth">64dp</item>
+        <item name="android:minHeight">36dp</item>
+    </style>
     <style name="VerticalProgressBar" parent="Widget.AppCompat.ProgressBar">
         <item name="android:rotation">270</item>
         <item name="android:minWidth">16dp</item>

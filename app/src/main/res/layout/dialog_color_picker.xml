@@ -93,7 +93,6 @@
             app:layout_constraintStart_toStartOf="parent"
             app:layout_constraintEnd_toEndOf="parent"/>
 
-        <!-- Enhanced Buttons Layout -->
         <LinearLayout
             android:id="@+id/buttonLayout"
             android:layout_width="0dp"
