@@ -4,28 +4,16 @@
     android:id="@+id/relativeLayoutRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/black"
     android:clipChildren="false"
     android:clipToPadding="false">
 
-    <FrameLayout
-        android:id="@+id/videoContainer"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:clipChildren="false"
-        android:clipToPadding="false">
 
         <com.google.android.exoplayer2.ui.PlayerView
             android:id="@+id/playerView"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:layout_gravity="center"
             app:surface_type="surface_view"
-            app:resize_mode="fit"
-            android:scaleType="fitCenter"
-            app:use_controller="false"
-            app:player_layout_id="@layout/exo_layout_view"/>
-    </FrameLayout>
+            />
 
     <RelativeLayout
         android:id="@+id/zoomContainer"

@@ -49,6 +49,7 @@ dependencies {
     implementation ("com.github.bumptech.glide:glide:4.12.0")
     implementation ("com.github.duanhong169:colorpicker:1.1.6")
     implementation ("com.github.lukelorusso:VerticalSeekBar:1.2.7")
+    implementation("com.otaliastudios:zoomlayout:1.9.0")
     implementation (libs.exoplayer)
     androidTestImplementation(libs.androidx.junit)
 

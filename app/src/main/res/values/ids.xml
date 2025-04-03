@@ -3,4 +3,5 @@
     <item name="exo_content_frame" type="id" />
     <item name="zoomText" type="id" />
     <item name="zoomContainer" type="id" />
+    <item name="zoomLayout" type="id" />
 </resources>
