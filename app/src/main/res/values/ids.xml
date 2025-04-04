@@ -4,4 +4,5 @@
     <item name="zoomText" type="id" />
     <item name="zoomContainer" type="id" />
     <item name="zoomLayout" type="id" />
+    <item name="speedSeekBar" type="id" />
 </resources>
