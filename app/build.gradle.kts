@@ -26,6 +26,7 @@ android {
             )
         }
     }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
@@ -52,6 +53,6 @@ dependencies {
     implementation("com.otaliastudios:zoomlayout:1.9.0")
     implementation (libs.exoplayer)
     androidTestImplementation(libs.androidx.junit)
-
+    implementation ("androidx.media3:media3-exoplayer:1.3.1")
     androidTestImplementation(libs.androidx.espresso.core)
 }

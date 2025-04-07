@@ -1,8 +1,12 @@
 package com.example.videoplayer
 
 import android.Manifest
+import android.app.Activity
+import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.content.IntentSender
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -10,10 +14,14 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -38,11 +46,8 @@ class VideoListActivity : AppCompatActivity() {
         private const val VIEW_MODE_LIST = 0
         private const val VIEW_MODE_GRID = 1
         private const val REQUEST_CODE_PERMISSIONS = 100
-        private val REQUIRED_PERMISSIONS = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(Manifest.permission.READ_MEDIA_VIDEO)
-        } else {
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
+        private const val DELETE_REQUEST_CODE = 101
+        private const val TAG = "VideoListActivity"
     }
 
     private lateinit var recyclerView: RecyclerView
@@ -54,8 +59,34 @@ class VideoListActivity : AppCompatActivity() {
     private var originalVideoList = mutableListOf<VideoItem>()
     private var isGrouped = false
 
+    // Activity result launcher for delete requests (Android 10+)
+    private val deleteLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            Toast.makeText(this, "Video deleted successfully", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "Deletion cancelled", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private val REQUIRED_PERMISSIONS: Array<String> by lazy {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            arrayOf(Manifest.permission.READ_MEDIA_VIDEO)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+        } else {
+            arrayOf(
+                Manifest.permission.READ_EXTERNAL_STORAGE,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            )
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            window.statusBarColor = ContextCompat.getColor(this, android.R.color.black)
+        }
         setContentView(R.layout.activity_video_list)
 
         recyclerView = findViewById(R.id.recyclerView)
@@ -63,14 +94,45 @@ class VideoListActivity : AppCompatActivity() {
         viewModeSpinner = findViewById(R.id.viewModeSpinner)
         sharedPref = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-        // Check and request permissions
+        videoAdapter = VideoAdapter(
+            context = this,
+            videos = emptyList(),
+            onClick = { uri ->
+                startActivity(Intent(this, MainActivity::class.java).apply {
+                    putExtra("VIDEO_URI", uri.toString())
+                })
+            },
+            updateOriginalList = { newList ->
+                originalVideoList = newList.toMutableList()
+            },
+            updateUiVisibility = { isListEmpty ->
+                if (isListEmpty) {
+                    recyclerView.visibility = View.GONE
+                    noVideosText.visibility = View.VISIBLE
+                } else {
+                    recyclerView.visibility = View.VISIBLE
+                    noVideosText.visibility = View.GONE
+                }
+            },
+            onDeleteRequested = { video ->
+                showDeleteConfirmation(video)
+            },
+            onRenameRequested = { video, position ->
+                showRenameDialog(video, position)
+            }
+        )
+        recyclerView.adapter = videoAdapter
+
         if (!hasPermissions()) {
             ActivityCompat.requestPermissions(this, REQUIRED_PERMISSIONS, REQUEST_CODE_PERMISSIONS)
         } else {
             loadVideos()
         }
 
-        // Set up spinner options
+        setupViewModeSpinner()
+    }
+
+    private fun setupViewModeSpinner() {
         val spinnerOptions = arrayOf(
             "Display in list",
             "Display in grid",
@@ -92,7 +154,6 @@ class VideoListActivity : AppCompatActivity() {
         spinnerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         viewModeSpinner.adapter = spinnerAdapter
 
-        // Restore saved view mode
         val savedViewMode = sharedPref.getInt(KEY_VIEW_MODE, VIEW_MODE_LIST)
         when (savedViewMode) {
             VIEW_MODE_GRID -> {
@@ -143,10 +204,10 @@ class VideoListActivity : AppCompatActivity() {
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQUEST_CODE_PERMISSIONS) {
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
                 loadVideos()
             } else {
-                Toast.makeText(this, "Permissions denied. Cannot load videos.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Permissions denied. Cannot load or modify videos.", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -203,28 +264,7 @@ class VideoListActivity : AppCompatActivity() {
         } else {
             noVideosText.visibility = View.GONE
             recyclerView.visibility = View.VISIBLE
-            videoAdapter = VideoAdapter(
-                context = this,
-                videos = videoList,
-                onClick = { uri ->
-                    startActivity(Intent(this, MainActivity::class.java).apply {
-                        putExtra("VIDEO_URI", uri.toString()) // Ensure URI is passed as String
-                    })
-                },
-                updateOriginalList = { newList ->
-                    originalVideoList = newList.toMutableList()
-                },
-                updateUiVisibility = { isListEmpty ->
-                    if (isListEmpty) {
-                        recyclerView.visibility = View.GONE
-                        noVideosText.visibility = View.VISIBLE
-                    } else {
-                        recyclerView.visibility = View.VISIBLE
-                        noVideosText.visibility = View.GONE
-                    }
-                }
-            )
-            recyclerView.adapter = videoAdapter
+            videoAdapter.updateList(videoList)
         }
     }
 
@@ -277,6 +317,266 @@ class VideoListActivity : AppCompatActivity() {
         else originalVideoList.sortedByDescending { it.dateAdded })
     }
 
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun showDeleteConfirmation(video: VideoItem) {
+        AlertDialog.Builder(this)
+            .setTitle("Confirm Delete")
+            .setMessage("Are you sure you want to delete ${video.title}?")
+            .setPositiveButton("Delete") { _, _ ->
+                deleteVideo(video)
+            }
+            .setNegativeButton("Cancel") { dialog, _ ->
+                dialog.dismiss()
+            }
+            .setCancelable(true)
+            .show()
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun deleteVideo(video: VideoItem) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Use the new MediaStore API for Android 10+
+                val deleteRequest = MediaStore.createDeleteRequest(
+                    contentResolver,
+                    listOf(ContentUris.withAppendedId(
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                        video.id
+                    ))
+                )
+
+                try {
+                    deleteLauncher.launch(
+                        IntentSenderRequest.Builder(deleteRequest.intentSender).build()
+                    )
+                    // Remove from our lists immediately (UI will update when deletion is confirmed)
+                    removeVideoFromList(video)
+                } catch (e: IntentSender.SendIntentException) {
+                    Log.e(TAG, "Could not start delete intent", e)
+                    Toast.makeText(this, "Could not start delete operation", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                // For pre-Android 10 devices
+                val deleted = contentResolver.delete(
+                    ContentUris.withAppendedId(
+                        MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                        video.id
+                    ),
+                    null,
+                    null
+                ) > 0
+
+                if (deleted) {
+                    // Try to delete the physical file if it exists
+                    File(video.path).delete()
+                    removeVideoFromList(video)
+                    Toast.makeText(this, "Video deleted successfully", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Failed to delete video", Toast.LENGTH_SHORT).show()
+                }
+            }
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Security exception deleting video", e)
+            Toast.makeText(
+                this,
+                "Permission denied. Cannot delete video.",
+                Toast.LENGTH_LONG
+            ).show()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error deleting video", e)
+            Toast.makeText(
+                this,
+                "Failed to delete video: ${e.message}",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun removeVideoFromList(video: VideoItem) {
+        videoList.remove(video)
+        originalVideoList.remove(video)
+        videoAdapter.updateList(videoList)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun showRenameDialog(video: VideoItem, position: Int) {
+        val dialog = AlertDialog.Builder(this)
+        dialog.setTitle("Rename Video")
+
+        val input = EditText(this).apply {
+            setText(video.title.substringBeforeLast("."))
+        }
+        dialog.setView(input)
+
+        dialog.setPositiveButton("Rename") { _, _ ->
+            val newName = input.text.toString().trim()
+            if (newName.isNotEmpty()) {
+                renameVideo(video, position, newName)
+            } else {
+                Toast.makeText(this, "Name cannot be empty", Toast.LENGTH_SHORT).show()
+            }
+        }
+        dialog.setNegativeButton("Cancel", null)
+        dialog.show()
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun renameVideo(video: VideoItem, position: Int, newName: String) {
+        // Create a CoroutineScope tied to the Activity's lifecycle
+        val scope = CoroutineScope(Dispatchers.Main)
+
+        scope.launch {
+            try {
+                val extension = video.title.substringAfterLast(".", "")
+                val newFileName = if (extension.isNotEmpty()) "$newName.$extension" else newName
+
+                // Perform the rename operation in IO dispatcher
+                withContext(Dispatchers.IO) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        // Android 11+ implementation
+                        val values = ContentValues().apply {
+                            put(MediaStore.Video.Media.DISPLAY_NAME, newFileName)
+                            put(MediaStore.Video.Media.IS_PENDING, 1)
+                        }
+
+                        val videoUri = ContentUris.withAppendedId(
+                            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                            video.id
+                        )
+
+                        contentResolver.update(videoUri, values, null, null)
+
+                        values.clear()
+                        values.put(MediaStore.Video.Media.IS_PENDING, 0)
+                        contentResolver.update(videoUri, values, null, null)
+                    }
+                    else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        // Android 10 implementation
+                        val uri = ContentUris.withAppendedId(
+                            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                            video.id
+                        )
+
+                        val editPendingIntent = MediaStore.createWriteRequest(
+                            contentResolver,
+                            listOf(uri)
+                        )
+
+                        try {
+                            // Need to switch to Main thread to show the system dialog
+                            withContext(Dispatchers.Main) {
+                                val editLauncher = registerForActivityResult(
+                                    ActivityResultContracts.StartIntentSenderForResult()
+                                ) { result ->
+                                    if (result.resultCode == Activity.RESULT_OK) {
+                                        // User granted permission - perform the actual rename
+                                        scope.launch {
+                                            performActualRename(video, position, newFileName)
+                                        }
+                                    } else {
+                                        Toast.makeText(
+                                            this@VideoListActivity,
+                                            "Permission denied for renaming",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                }
+
+                                editLauncher.launch(
+                                    IntentSenderRequest.Builder(editPendingIntent.intentSender).build()
+                                )
+                            }
+                            return@withContext
+                        } catch (e: IntentSender.SendIntentException) {
+                            Log.e(TAG, "Could not start rename intent", e)
+                            throw Exception("Could not start rename operation")
+                        }
+                    }
+                    else {
+                        // Pre-Android 10 implementation
+                        performActualRename(video, position, newFileName)
+                    }
+                }
+
+                // Update UI after successful rename
+                val updatedVideo = video.copy(
+                    title = newFileName,
+                    path = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        video.path
+                    } else {
+                        "${File(video.path).parent}/$newFileName"
+                    }
+                )
+
+                videoList[position] = updatedVideo
+                originalVideoList = originalVideoList.map {
+                    if (it.id == video.id) updatedVideo else it
+                }.toMutableList()
+                videoAdapter.updateList(videoList)
+
+                Toast.makeText(
+                    this@VideoListActivity,
+                    "Video renamed successfully",
+                    Toast.LENGTH_SHORT
+                ).show()
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Error renaming video", e)
+                Toast.makeText(
+                    this@VideoListActivity,
+                    "Failed to rename: ${e.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+    private suspend fun performActualRename(video: VideoItem, position: Int, newFileName: String) {
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, newFileName)
+        }
+
+        val videoUri = ContentUris.withAppendedId(
+            MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+            video.id
+        )
+
+        val updated = contentResolver.update(videoUri, values, null, null) > 0
+
+        if (updated) {
+            // For older devices, also rename the physical file
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                val oldFile = File(video.path)
+                if (oldFile.exists()) {
+                    val newPath = "${oldFile.parent}/$newFileName"
+                    oldFile.renameTo(File(newPath))
+                }
+            }
+
+            // Update UI
+            withContext(Dispatchers.Main) {
+                val updatedVideo = video.copy(
+                    title = newFileName,
+                    path = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        video.path // Path doesn't change in newer Android versions
+                    } else {
+                        "${File(video.path).parent}/$newFileName"
+                    }
+                )
+                videoList[position] = updatedVideo
+                originalVideoList = originalVideoList.map {
+                    if (it.id == video.id) updatedVideo else it
+                }.toMutableList()
+                videoAdapter.updateList(videoList)
+                Toast.makeText(
+                    this@VideoListActivity,
+                    "Video renamed successfully",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        } else {
+            throw Exception("Failed to update MediaStore entry")
+        }
+    }
     data class VideoItem(
         val uri: Uri,
         val title: String,
@@ -294,7 +594,9 @@ class VideoListActivity : AppCompatActivity() {
         private var videos: List<VideoItem>,
         private val onClick: (Uri) -> Unit,
         private val updateOriginalList: (List<VideoItem>) -> Unit,
-        private val updateUiVisibility: (Boolean) -> Unit
+        private val updateUiVisibility: (Boolean) -> Unit,
+        private val onDeleteRequested: (VideoItem) -> Unit,
+        private val onRenameRequested: (VideoItem, Int) -> Unit
     ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
 
         private var isGridMode = false
@@ -313,6 +615,8 @@ class VideoListActivity : AppCompatActivity() {
         fun updateList(newList: List<VideoItem>) {
             videos = newList
             notifyDataSetChanged()
+            updateUiVisibility(videos.isEmpty())
+            updateOriginalList(newList)
         }
 
         override fun getItemViewType(position: Int) = when {
@@ -323,16 +627,13 @@ class VideoListActivity : AppCompatActivity() {
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) = when (viewType) {
             VIEW_TYPE_HEADER -> HeaderViewHolder(
-                LayoutInflater.from(parent.context)
-                    .inflate(R.layout.item_group_header, parent, false)
+                LayoutInflater.from(parent.context).inflate(R.layout.item_group_header, parent, false)
             )
             VIEW_TYPE_GRID -> GridViewHolder(
-                LayoutInflater.from(parent.context)
-                    .inflate(R.layout.item_view_grid, parent, false)
+                LayoutInflater.from(parent.context).inflate(R.layout.item_view_grid, parent, false)
             )
             else -> ListViewHolder(
-                LayoutInflater.from(parent.context)
-                    .inflate(R.layout.item_video, parent, false)
+                LayoutInflater.from(parent.context).inflate(R.layout.item_video, parent, false)
             )
         }
 
@@ -366,7 +667,7 @@ class VideoListActivity : AppCompatActivity() {
                 popupMenu.setOnMenuItemClickListener { item ->
                     when (item.itemId) {
                         R.id.action_rename -> {
-                            renameVideo(video, position)
+                            onRenameRequested(video, position)
                             true
                         }
                         R.id.action_share -> {
@@ -374,7 +675,7 @@ class VideoListActivity : AppCompatActivity() {
                             true
                         }
                         R.id.action_delete -> {
-                            deleteVideo(video, position)
+                            onDeleteRequested(video)
                             true
                         }
                         R.id.action_properties -> {
@@ -386,43 +687,6 @@ class VideoListActivity : AppCompatActivity() {
                 }
                 popupMenu.show()
             }
-        }
-
-        private fun renameVideo(video: VideoItem, position: Int) {
-            val dialog = AlertDialog.Builder(context)
-            dialog.setTitle("Rename Video")
-
-            val input = EditText(context)
-            input.setText(video.title)
-            dialog.setView(input)
-
-            dialog.setPositiveButton("OK") { _, _ ->
-                val newName = input.text.toString().trim()
-                if (newName.isNotEmpty()) {
-                    val file = File(video.path)
-                    val parentDir = file.parentFile
-                    val newFile = File(parentDir, "$newName${file.extension}")
-                    if (file.renameTo(newFile)) {
-                        val updatedVideo = video.copy(
-                            title = newName,
-                            path = newFile.absolutePath
-                        )
-                        videos = videos.toMutableList().apply { set(position, updatedVideo) }
-                        val updatedOriginalList = videos.map { item ->
-                            if (item.id == video.id) updatedVideo else item
-                        }
-                        updateOriginalList(updatedOriginalList)
-                        notifyItemChanged(position)
-                        Toast.makeText(context, "Video renamed successfully", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "Failed to rename video", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    Toast.makeText(context, "Name cannot be empty", Toast.LENGTH_SHORT).show()
-                }
-            }
-            dialog.setNegativeButton("Cancel") { dialog, _ -> dialog.cancel() }
-            dialog.show()
         }
 
         private fun shareVideo(video: VideoItem) {
@@ -440,39 +704,18 @@ class VideoListActivity : AppCompatActivity() {
             context.startActivity(Intent.createChooser(shareIntent, "Share Video"))
         }
 
-        private fun deleteVideo(video: VideoItem, position: Int) {
-            AlertDialog.Builder(context)
-                .setTitle("Delete Video")
-                .setMessage("Are you sure you want to delete ${video.title}?")
-                .setPositiveButton("Yes") { _, _ ->
-                    val file = File(video.path)
-                    if (file.delete()) {
-                        videos = videos.toMutableList().apply { removeAt(position) }
-                        val updatedOriginalList = videos.filter { it.id != video.id }
-                        updateOriginalList(updatedOriginalList)
-                        notifyItemRemoved(position)
-                        updateUiVisibility(videos.isEmpty())
-                        Toast.makeText(context, "Video deleted successfully", Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, "Failed to delete video", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                .setNegativeButton("No") { dialog, _ -> dialog.dismiss() }
-                .show()
-        }
-
         private fun showProperties(video: VideoItem) {
             val dateFormat = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
             val dateAdded = dateFormat.format(Date(video.dateAdded * 1000))
             val file = File(video.path)
             val sizeInMB = file.length() / (1024.0 * 1024.0)
             val properties = """
-            Title: ${video.title}
-            Duration: ${formatDuration(video.duration)}
-            Date Added: $dateAdded
-            Path: ${video.path}
-            Size: ${"%.2f".format(sizeInMB)} MB
-        """.trimIndent()
+                Title: ${video.title}
+                Duration: ${formatDuration(video.duration)}
+                Date Added: $dateAdded
+                Path: ${video.path}
+                Size: ${"%.2f".format(sizeInMB)} MB
+            """.trimIndent()
 
             AlertDialog.Builder(context)
                 .setTitle("Video Properties")

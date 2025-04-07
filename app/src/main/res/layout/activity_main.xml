@@ -12,7 +12,21 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         app:surface_type="surface_view" />
-
+    <!-- Add this inside the root RelativeLayout -->
+    <ImageView
+        android:id="@+id/unlockIcon"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:src="@drawable/unlock"
+        android:contentDescription="Unlock screen"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:padding="8dp"
+        android:layout_alignParentEnd="true"
+        android:layout_alignParentBottom="true"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="16dp"
+        android:visibility="gone"
+        app:tint="@android:color/white" />
     <!-- Zoom Container -->
     <RelativeLayout
         android:id="@+id/zoomContainer"
@@ -68,10 +82,10 @@
 
         <ImageButton
             android:id="@+id/rewindButton"
-            android:layout_width="60dp"
-            android:layout_height="60dp"
+            android:layout_width="100dp"
+            android:layout_height="100dp"
             android:src="@drawable/back_10"
-            android:layout_marginRight="50dp"
+            android:layout_marginEnd="150dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Rewind 10s"
             android:padding="8dp" />
@@ -87,10 +101,10 @@
 
         <ImageButton
             android:id="@+id/forwardButton"
-            android:layout_width="48dp"
-            android:layout_height="48dp"
+            android:layout_width="100dp"
+            android:layout_height="100dp"
             android:src="@drawable/forward_10s"
-            android:layout_marginLeft="50dp"
+            android:layout_marginLeft="150dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Forward 10s"
             android:padding="8dp" />
@@ -102,21 +116,40 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:padding="8dp"
+        android:padding="12dp"
         android:layout_alignParentTop="true"
-        android:gravity="center_vertical">
+        android:gravity="center_vertical"
+        android:elevation="4dp">
+
+        <ImageView
+            android:id="@+id/back"
+            android:layout_width="32dp"
+            android:layout_height="32dp"
+            android:src="@drawable/back"
+            android:contentDescription="Back"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:padding="4dp"
+            android:visibility="gone"
+            app:tint="@color/white" />
 
         <TextView
             android:id="@+id/videoTitleTextView"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
             android:text="Video Title"
             android:textColor="@android:color/white"
             android:textSize="18sp"
             android:ellipsize="end"
             android:maxLines="1"
+            android:shadowColor="#80000000"
+            android:shadowDx="1"
+            android:shadowDy="1"
+            android:shadowRadius="2"
             android:visibility="gone" />
+
     </LinearLayout>
 
     <!-- Bottom Controls -->
@@ -127,7 +160,7 @@
         android:orientation="vertical"
         android:layout_alignParentBottom="true"
         android:padding="8dp"
-        android:background="#80000000">
+        android:background="#00000000">
 
         <LinearLayout
             android:id="@+id/bottomControls"
@@ -176,7 +209,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
-            android:weightSum="4"
+            android:weightSum="5"
             android:padding="4dp"
             android:visibility="gone">
 
@@ -238,7 +271,34 @@
                     android:textSize="12sp"
                     android:padding="4dp" />
             </LinearLayout>
+            <LinearLayout
+                android:id="@+id/orientationLockButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:padding="4dp">
 
+                <ImageButton
+                    android:id="@+id/orientationLockIcon"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:src="@android:drawable/ic_lock_idle_lock"
+                    android:contentDescription="Lock Orientation"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:scaleType="centerInside"
+                    android:padding="8dp" />
+
+                <TextView
+                    android:id="@+id/orientationLockText"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Lock Orientation"
+                    android:textColor="@android:color/white"
+                    android:textSize="12sp"
+                    android:padding="4dp" />
+            </LinearLayout>
             <!-- Aspect Ratio Button -->
             <LinearLayout
                 android:id="@+id/aspectRatioButton"
@@ -253,7 +313,7 @@
                     android:id="@+id/aspectRatioIcon"
                     android:layout_width="48dp"
                     android:layout_height="48dp"
-                    android:src="@android:drawable/ic_menu_crop"
+                    android:src="@drawable/full_screen"
                     android:contentDescription="Aspect Ratio"
                     android:background="?attr/selectableItemBackgroundBorderless"
                     android:scaleType="centerInside"
@@ -367,8 +427,19 @@
         android:visibility="gone">
         <com.lukelorusso.verticalseekbar.VerticalSeekBar
             android:id="@+id/BrightnessSeekBar"
-            android:layout_width="16dp"
-            android:layout_height="280dp"/>
+            android:layout_width="8dp"
+            android:layout_height="200dp"
+            android:layout_centerHorizontal="true"
+            app:vsb_bar_width="8dp"
+            app:vsb_bar_corner_radius="4dp"
+            app:vsb_bar_background="#80FFFFFF"
+            app:vsb_bar_progress_gradient_start="#FFFFFF"
+            app:vsb_bar_progress_gradient_end="#FFFFFF"
+            app:vsb_progress="50"
+            app:vsb_show_thumb="true"
+            app:vsb_thumb_placeholder_src="@drawable/netflix_seekbar_thumb"
+            app:vsb_use_thumb_to_set_progress="true"
+            app:vsb_click_to_set_progress="false" />
 
         <TextView
             android:id="@+id/brightnessText"
@@ -391,8 +462,19 @@
         android:visibility="gone">
         <com.lukelorusso.verticalseekbar.VerticalSeekBar
             android:id="@+id/VolumeSeekBar"
-            android:layout_width="16dp"
-            android:layout_height="280dp"/>
+            android:layout_width="8dp"
+            android:layout_height="280dp"
+            android:layout_centerHorizontal="true"
+            app:vsb_bar_width="8dp"
+            app:vsb_bar_corner_radius="4dp"
+            app:vsb_bar_background="#80FFFFFF"
+            app:vsb_bar_progress_gradient_start="#FFFFFF"
+            app:vsb_bar_progress_gradient_end="#FFFFFF"
+            app:vsb_progress="50"
+            app:vsb_show_thumb="true"
+            app:vsb_thumb_placeholder_src="@drawable/netflix_seekbar_thumb"
+            app:vsb_use_thumb_to_set_progress="true"
+            app:vsb_click_to_set_progress="false" />
         <TextView
             android:id="@+id/volumeText"
             android:layout_width="wrap_content"

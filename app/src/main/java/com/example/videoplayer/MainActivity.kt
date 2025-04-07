@@ -39,6 +39,10 @@ import com.lukelorusso.verticalseekbar.VerticalSeekBar
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import android.content.SharedPreferences
+import android.content.res.Configuration
+import android.text.Spannable
+import android.text.SpannableString
+import com.google.android.exoplayer2.audio.AudioAttributes
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -72,8 +76,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var playImageView: ImageView
     private lateinit var audioManager: AudioManager
     private lateinit var tvVolumeValue: TextView
-    private lateinit var aspectRatioButton: LinearLayout // Add this
-    private lateinit var aspectRatioIcon: ImageView // Add this
+    private lateinit var aspectRatioButton: LinearLayout
+    private lateinit var aspectRatioIcon: ImageView
     private lateinit var aspectRatioText: TextView
     private lateinit var speedText: TextView
     private lateinit var lockText: TextView
@@ -82,7 +86,9 @@ class MainActivity : AppCompatActivity() {
     private var currentScaleMode = VideoScaleMode.FIT
     private lateinit var continueTextView: TextView
     private lateinit var sharedPreferences: SharedPreferences
-
+    private lateinit var unlockIcon: ImageView
+    private var currentVideoUri: Uri? = null
+    private var showRemainingTime = false // Track whether to show remaining time
     // New UI components for brightness/volume controls
     private lateinit var brightnessContainer: RelativeLayout
     private lateinit var volumeContainer: RelativeLayout
@@ -95,13 +101,18 @@ class MainActivity : AppCompatActivity() {
     private var isZooming = false
     private var focusX = 0f
     private var focusY = 0f
-
+    private lateinit var orientationLockButton: LinearLayout
+    private lateinit var orientationLockIcon: ImageView
+    private var isOrientationLocked = false
     // Gesture detectors
+    private var audioSessionId = C.AUDIO_SESSION_ID_UNSET
     private lateinit var gestureDetector: GestureDetectorCompat
     private var loudnessEnhancer: LoudnessEnhancer? = null
     private lateinit var zoomcontainer: RelativeLayout
     private lateinit var zoomtext: TextView
+    private lateinit var back: ImageView
 
+    private var currentSubtitleUri: Uri? = null
     // State variables
     private var isFullScreen = false
     private var isSpeedIncreased = false
@@ -129,7 +140,7 @@ class MainActivity : AppCompatActivity() {
     // Request codes
     private val PICK_VIDEO_REQUEST = 1
     private val PICK_SUBTITLE_REQUEST = 2
-
+    private val subtitleUris = mutableMapOf<Uri, Uri?>()
     // URIs
     private var videoUri: Uri? = null
     private var subtitleUri: Uri? = null
@@ -150,6 +161,7 @@ class MainActivity : AppCompatActivity() {
         currentSubtitleSize = sharedPreferences.getFloat("subtitle_size", SUBTITLE_SIZE_DEFAULT)
         currentSubtitleBackground = sharedPreferences.getInt("subtitle_background", Color.TRANSPARENT)
         currentSubtitleShadow = sharedPreferences.getBoolean("subtitle_shadow", true)
+        currentSubtitleShadowIntensity = sharedPreferences.getInt("subtitle_shadow_intensity", 100) / 100f
         updateSubtitleAppearance()
     }
 
@@ -159,6 +171,7 @@ class MainActivity : AppCompatActivity() {
             putFloat("subtitle_size", currentSubtitleSize)
             putInt("subtitle_background", currentSubtitleBackground)
             putBoolean("subtitle_shadow", currentSubtitleShadow)
+            putInt("subtitle_shadow_intensity", (currentSubtitleShadowIntensity * 100).toInt())
             apply()
         }
     }
@@ -213,6 +226,8 @@ class MainActivity : AppCompatActivity() {
             window.attributes.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
+        // Set initial orientation to landscape
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO) != PackageManager.PERMISSION_GRANTED) {
@@ -227,15 +242,33 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
 
         sharedPreferences = getSharedPreferences("VideoPlaybackPrefs", MODE_PRIVATE)
+        val savedSubtitleUris = sharedPreferences.all
+            .filter { it.key.startsWith("subtitleUri_") }
+            .mapNotNull { (key, value) ->
+                try {
+                    val videoUri = Uri.parse(key.removePrefix("subtitleUri_"))
+                    val subtitleUri = Uri.parse(value.toString())
+                    videoUri to subtitleUri
+                } catch (e: Exception) {
+                    null
+                }
+            }
 
+        subtitleUris.putAll(savedSubtitleUris)
         initViews()
         loadSubtitleSettings()
 
-        initPlayer()
+        initPlayer() // Initialize player first
+
+        // Load persisted speed and aspect ratio after player is initialized
+        val savedSpeed = sharedPreferences.getFloat("playback_speed", 1.0f)
+        player.playbackParameters = PlaybackParameters(savedSpeed)
+        currentScaleMode = VideoScaleMode.values()[sharedPreferences.getInt("aspect_ratio_mode", VideoScaleMode.FIT.ordinal)]
+        applyScaleMode(currentScaleMode)
+
         initGestureDetectors()
         setupSeekBars()
         setupNewButtons()
-        setupZoomButton()
 
         playerView.setBackgroundColor(Color.BLACK)
 
@@ -252,23 +285,53 @@ class MainActivity : AppCompatActivity() {
             launchVideoList()
         }
 
-        // Set to landscape mode by default
+        // Load saved subtitle URI for the current video if available
+        videoUri?.let { currentVideoUri ->
+            val savedSubtitleUriString = sharedPreferences.getString("subtitleUri_$currentVideoUri", null)
+            if (savedSubtitleUriString != null) {
+                try {
+                    currentSubtitleUri = Uri.parse(savedSubtitleUriString)
+                    contentResolver.takePersistableUriPermission(currentSubtitleUri!!,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    subtitleUris[currentVideoUri] = currentSubtitleUri
+                    Log.d("MainActivity", "Loaded saved subtitle URI: $currentSubtitleUri")
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Failed to load saved subtitle URI", e)
+                    sharedPreferences.edit().remove("subtitleUri_$currentVideoUri").apply()
+                    subtitleUris.remove(currentVideoUri)
+                    currentSubtitleUri = null
+                }
+            }
+        }
+
         playerView.post {
             setFullScreenMode(true)
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+            window.statusBarColor = ContextCompat.getColor(this, android.R.color.black)
         }
     }
-
     private fun initViews() {
         playerView = findViewById(R.id.playerView)
         videoSeekBar = findViewById(R.id.videoSeekBar)
         playImageView = findViewById(R.id.playImageView)
         lockButton = findViewById(R.id.lockButton)
-        lockIcon = lockButton.findViewById(R.id.lock_ic) // Initialize lockIcon
+        lockIcon = lockButton.findViewById(R.id.lock_ic)
         playPauseButton = findViewById(R.id.playPauseButton)
         rewindButton = findViewById(R.id.rewindButton)
         forwardButton = findViewById(R.id.forwardButton)
         speedButton = findViewById(R.id.speedButton)
         audioSubtitleButton = findViewById(R.id.audioSubtitleButton)
+        back=findViewById(R.id.back)
+        setupBackButton()
+        unlockIcon = findViewById(R.id.unlockIcon)
+        rightTimeTextView = findViewById(R.id.righttime)
+        setupUnlockIcon()
+        rightTimeTextView.setOnClickListener { toggleRemainingTime() }
+        unlockIcon.visibility = View.GONE
         skipDirectionTextView = findViewById(R.id.skipDirectionTextView)
         brightnessSeekBar = findViewById(R.id.BrightnessSeekBar)
         seekBarVolume = findViewById(R.id.VolumeSeekBar)
@@ -277,7 +340,6 @@ class MainActivity : AppCompatActivity() {
         centerControls = findViewById(R.id.centerControls)
         bottomButtons = findViewById(R.id.bottomButtons)
         leftTimeTextView = findViewById(R.id.lefttime)
-        rightTimeTextView = findViewById(R.id.righttime)
         seekTimeTextView = findViewById(R.id.seekTimeTextView)
         twoxtimeTextview = findViewById(R.id.twoxTimeTextView)
         subtitleTextView = findViewById(R.id.subtitleTextView)
@@ -295,9 +357,12 @@ class MainActivity : AppCompatActivity() {
         speedText = findViewById(R.id.speedText)
         lockText = findViewById(R.id.lockText)
         audioSubtitleText = findViewById(R.id.audioSubtitleText)
-        aspectRatioButton = findViewById(R.id.aspectRatioButton) // Initialize aspectRatioButton
-        aspectRatioIcon = aspectRatioButton.findViewById(R.id.aspectRatioIcon) // Initialize aspectRatioIcon
+        aspectRatioButton = findViewById(R.id.aspectRatioButton)
+        aspectRatioIcon = aspectRatioButton.findViewById(R.id.aspectRatioIcon)
         aspectRatioText = findViewById(R.id.aspectRatioText)
+        orientationLockButton = findViewById(R.id.orientationLockButton)
+        orientationLockIcon = orientationLockButton.findViewById(R.id.orientationLockIcon)
+        orientationLockButton.setOnClickListener { toggleOrientationLock() }
         // Initial visibility setup
         bottomControls.visibility = View.GONE
         controlsLayout.visibility = View.GONE
@@ -315,9 +380,12 @@ class MainActivity : AppCompatActivity() {
         zoomcontainer.visibility = View.GONE
         skipDirectionTextView.visibility = View.GONE
         speedText.visibility = View.GONE
+        lockButton.visibility = View.GONE
         lockText.visibility = View.GONE
+        back.visibility=View.GONE
         audioSubtitleText.visibility = View.GONE
-        aspectRatioText.visibility = View.GONE // Set initial visibility to GONE
+        aspectRatioText.visibility = View.GONE
+        lockText.visibility = View.GONE
         // Initialize seek bars
         brightnessSeekBar.maxValue = 100
         seekBarVolume.maxValue = 200
@@ -343,8 +411,9 @@ class MainActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                addRule(RelativeLayout.ABOVE, R.id.controlsLayout)
+                addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
                 addRule(RelativeLayout.CENTER_HORIZONTAL)
+                bottomMargin = resources.getDimensionPixelSize(R.dimen.subtitle_bottom_margin)
             }
             bringToFront()
             setOnTouchListener(SubTitleDragListener())
@@ -352,10 +421,35 @@ class MainActivity : AppCompatActivity() {
 
         playerView.visibility = View.VISIBLE
     }
+    private fun updateOrientationLockIcon() {
+        // Assuming you have an ImageView for the orientation lock icon
+        orientationLockIcon.setImageResource(
+            if (isOrientationLocked) android.R.drawable.ic_lock_lock
+            else android.R.drawable.ic_lock_idle_lock
+        )
+    }
 
-    private fun showZoomOptionsDialog() {
+    private fun toggleOrientationLock() {
+        isOrientationLocked = !isOrientationLocked
+        if (isOrientationLocked) {
+            // Lock to current orientation
+            val currentOrientation = resources.configuration.orientation
+            requestedOrientation = when (currentOrientation) {
+                Configuration.ORIENTATION_LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                else -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+            }
+            Toast.makeText(this, "Orientation locked", Toast.LENGTH_SHORT).show()
+        } else {
+            // Unlock orientation
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
+            Toast.makeText(this, "Orientation unlocked", Toast.LENGTH_SHORT).show()
+        }
+        updateOrientationLockIcon()
+    }
+
+    private fun showAspectRatioDialog() {
         val builder = AlertDialog.Builder(this, R.style.CustomAlertDialog)
-        builder.setTitle("Select Zoom/Aspect Ratio")
+        builder.setTitle("Select Aspect Ratio")
 
         val options = arrayOf(
             "Fill", "Fit", "Original", "Stretch",
@@ -363,18 +457,21 @@ class MainActivity : AppCompatActivity() {
         )
 
         builder.setItems(options) { _, which ->
-            when (which) {
-                0 -> applyScaleMode(VideoScaleMode.FILL)
-                1 -> applyScaleMode(VideoScaleMode.FIT)
-                2 -> applyScaleMode(VideoScaleMode.ORIGINAL)
-                3 -> applyScaleMode(VideoScaleMode.STRETCH)
-                4 -> applyScaleMode(VideoScaleMode.RATIO_16_9)
-                5 -> applyScaleMode(VideoScaleMode.RATIO_4_3)
-                6 -> applyScaleMode(VideoScaleMode.RATIO_18_9)
-                7 -> applyScaleMode(VideoScaleMode.RATIO_19_5_9)
-                8 -> applyScaleMode(VideoScaleMode.RATIO_20_9)
-                9 -> applyScaleMode(VideoScaleMode.RATIO_21_9)
+            val mode = when (which) {
+                0 -> VideoScaleMode.FILL
+                1 -> VideoScaleMode.FIT
+                2 -> VideoScaleMode.ORIGINAL
+                3 -> VideoScaleMode.STRETCH
+                4 -> VideoScaleMode.RATIO_16_9
+                5 -> VideoScaleMode.RATIO_4_3
+                6 -> VideoScaleMode.RATIO_18_9
+                7 -> VideoScaleMode.RATIO_19_5_9
+                8 -> VideoScaleMode.RATIO_20_9
+                9 -> VideoScaleMode.RATIO_21_9
+                else -> VideoScaleMode.FIT
             }
+            applyScaleMode(mode)
+            sharedPreferences.edit().putInt("aspect_ratio_mode", mode.ordinal).apply()
         }
 
         builder.setNegativeButton("Cancel") { dialog, _ -> dialog.dismiss() }
@@ -385,7 +482,6 @@ class MainActivity : AppCompatActivity() {
         }
         dialog.show()
     }
-
     private fun applyScaleMode(mode: VideoScaleMode) {
         currentScaleMode = mode
 
@@ -470,13 +566,27 @@ class MainActivity : AppCompatActivity() {
                         if (player.playWhenReady) {
                             handler.post(updateSeekBarRunnable)
                             playImageView.visibility = View.GONE
-                            playPauseButton.setImageResource(android.R.drawable.ic_media_pause)
+                            playPauseButton.setImageResource(R.drawable.play)
+                        } else {
+                            playImageView.visibility = View.VISIBLE
+                            playPauseButton.setImageResource(R.drawable.pause)
                         }
+
+                        // Automatically enable the first embedded subtitle if available
+                        val textGroups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+                        if (textGroups.isNotEmpty() && !isUsingEmbeddedSubtitles) {
+                            val selectedGroup = textGroups[0]
+                            enableEmbeddedSubtitle(selectedGroup)
+                            Toast.makeText(this@MainActivity, "Embedded subtitles enabled", Toast.LENGTH_SHORT).show()
+                        }
+
+                        // Log and configure audio tracks
+                        configureAudioTrack()
                     }
                     Player.STATE_ENDED -> {
                         handler.removeCallbacks(updateSeekBarRunnable)
                         playImageView.visibility = View.VISIBLE
-                        playPauseButton.setImageResource(android.R.drawable.ic_media_play)
+                        playPauseButton.setImageResource(R.drawable.pause)
                         videoUri?.let {
                             sharedPreferences.edit().remove(it.toString()).apply()
                         }
@@ -490,11 +600,11 @@ class MainActivity : AppCompatActivity() {
                 if (playWhenReady) {
                     handler.post(updateSeekBarRunnable)
                     playImageView.visibility = View.GONE
-                    playPauseButton.setImageResource(android.R.drawable.ic_media_pause)
+                    playPauseButton.setImageResource(R.drawable.play)
                 } else {
                     handler.removeCallbacks(updateSeekBarRunnable)
                     playImageView.visibility = View.VISIBLE
-                    playPauseButton.setImageResource(android.R.drawable.ic_media_play)
+                    playPauseButton.setImageResource(R.drawable.pause)
                 }
             }
 
@@ -515,13 +625,20 @@ class MainActivity : AppCompatActivity() {
 
             override fun onAudioSessionIdChanged(audioSessionId: Int) {
                 try {
+                    bassBoost?.release()
+                    loudnessEnhancer?.release()
                     bassBoost = BassBoost(0, audioSessionId).apply {
                         enabled = true
-                        setStrength(0)
+                        setStrength(0) // Start with minimal bass boost
+                    }
+                    loudnessEnhancer = LoudnessEnhancer(audioSessionId).apply {
+                        setTargetGain(1000) // Initial gain in millibels
+                        enabled = true
                     }
                 } catch (e: Exception) {
-                    Log.e("BassBoost", "Failed to initialize BassBoost: ${e.message}")
+                    Log.e("BassBoost", "Failed to initialize audio effects: ${e.message}")
                     Toast.makeText(this@MainActivity, "Volume boost unavailable", Toast.LENGTH_SHORT).show()
+                    player.volume = 1.5f
                 }
             }
 
@@ -536,10 +653,40 @@ class MainActivity : AppCompatActivity() {
 
         trackSelector.parameters = trackSelector.parameters
             .buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false) // Allow text tracks
+            .setPreferredAudioRoleFlags(C.ROLE_FLAG_MAIN) // Prefer main audio
+            .setTunnelingEnabled(false) // Disable tunneling for better audio handling
             .build()
     }
 
+    private fun configureAudioTrack() {
+        val audioGroups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+        if (audioGroups.isNotEmpty()) {
+            Log.d("AudioTracks", "Available audio tracks: ${audioGroups.size}")
+            audioGroups.forEachIndexed { index, group ->
+                val format = group.mediaTrackGroup.getFormat(0)
+                Log.d("AudioTracks", "Track $index: Language=${format.language}, Channels=${format.channelCount}, Role=${format.roleFlags}")
+            }
+
+            // Select the first audio track with downmixing enabled
+            val selectedGroup = audioGroups.firstOrNull { group ->
+                val format = group.mediaTrackGroup.getFormat(0)
+                format.channelCount > 2 // Assume 5.1 if more than stereo
+            } ?: audioGroups.first()
+
+            enableAudioTrack(selectedGroup)
+
+
+            val format = selectedGroup.mediaTrackGroup.getFormat(0)
+            if (format.channelCount > 2) {
+                loudnessEnhancer?.setTargetGain(2000)
+            } else {
+                loudnessEnhancer?.setTargetGain(1000)
+            }
+        } else {
+            Log.w("AudioTracks", "No audio tracks available")
+        }
+    }
     private fun initGestureDetectors() {
         gestureDetector = GestureDetectorCompat(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
@@ -570,7 +717,7 @@ class MainActivity : AppCompatActivity() {
                 val screenWidth = resources.displayMetrics.widthPixels.toFloat()
                 val screenHeight = resources.displayMetrics.heightPixels.toFloat()
                 val deltaX = e2.x - e1.x
-                val deltaY = e1.y - e2.y
+                val deltaY = e2.y - e1.y
 
                 if (abs(deltaX) < minSwipeDistance && abs(deltaY) < minSwipeDistance) return false
 
@@ -588,8 +735,22 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
                     e1.x < screenWidth / 2 -> {
-                        brightnessOverlay.visibility = View.VISIBLE
-                        brightnessContainer.visibility = View.VISIBLE
+                        // Fade in if not already visible
+                        if (brightnessContainer.visibility != View.VISIBLE) {
+                            brightnessContainer.alpha = 0f
+                            brightnessOverlay.alpha = 0f
+                            brightnessContainer.visibility = View.VISIBLE
+                            brightnessOverlay.visibility = View.VISIBLE
+                            brightnessContainer.animate()
+                                .alpha(1f)
+                                .setDuration(200)
+                                .start()
+                            brightnessOverlay.animate()
+                                .alpha(1f)
+                                .setDuration(200)
+                                .start()
+                        }
+
                         val normalizedDelta = -deltaY / screenHeight
                         val progressChange = (normalizedDelta * 50 * sensitivityFactor *
                                 min(1f, abs(normalizedDelta) * 2)).toInt()
@@ -600,13 +761,45 @@ class MainActivity : AppCompatActivity() {
                         val lp = window.attributes
                         lp.screenBrightness = if (brightness == 0f) 0.01f else brightness
                         window.attributes = lp
+
+                        // Schedule fade out
                         handler.removeCallbacks(hideBrightnessOverlayRunnable)
-                        handler.postDelayed(hideBrightnessOverlayRunnable, 1000)
+                        handler.postDelayed({
+                            brightnessContainer.animate()
+                                .alpha(0f)
+                                .setDuration(200)
+                                .withEndAction {
+                                    brightnessContainer.visibility = View.GONE
+                                }
+                                .start()
+                            brightnessOverlay.animate()
+                                .alpha(0f)
+                                .setDuration(200)
+                                .withEndAction {
+                                    brightnessOverlay.visibility = View.GONE
+                                }
+                                .start()
+                        }, 1000)
+
                         resetHideControlsTimer()
                     }
                     else -> {
-                        brightnessOverlay.visibility = View.VISIBLE
-                        volumeContainer.visibility = View.VISIBLE
+                        // Volume adjustment (apply similar fade animations if desired)
+                        if (volumeContainer.visibility != View.VISIBLE) {
+                            volumeContainer.alpha = 0f
+                            brightnessOverlay.alpha = 0f
+                            volumeContainer.visibility = View.VISIBLE
+                            brightnessOverlay.visibility = View.VISIBLE
+                            volumeContainer.animate()
+                                .alpha(1f)
+                                .setDuration(200)
+                                .start()
+                            brightnessOverlay.animate()
+                                .alpha(1f)
+                                .setDuration(200)
+                                .start()
+                        }
+
                         val normalizedDelta = -deltaY / screenHeight
                         val progressChange = (normalizedDelta * 100 * sensitivityFactor *
                                 min(1f, abs(normalizedDelta) * 2)).toInt()
@@ -631,7 +824,23 @@ class MainActivity : AppCompatActivity() {
                         }
 
                         handler.removeCallbacks(hideVolumeRunnable)
-                        handler.postDelayed(hideVolumeRunnable, 1000)
+                        handler.postDelayed({
+                            volumeContainer.animate()
+                                .alpha(0f)
+                                .setDuration(200)
+                                .withEndAction {
+                                    volumeContainer.visibility = View.GONE
+                                }
+                                .start()
+                            brightnessOverlay.animate()
+                                .alpha(0f)
+                                .setDuration(200)
+                                .withEndAction {
+                                    brightnessOverlay.visibility = View.GONE
+                                }
+                                .start()
+                        }, 1000)
+
                         resetHideControlsTimer()
                     }
                 }
@@ -661,25 +870,27 @@ class MainActivity : AppCompatActivity() {
             }
 
             private fun seekRelative(amount: Long) {
-                val newPosition = max(0, min(player.duration, player.currentPosition + amount))
-                if (player.playbackState == Player.STATE_READY) {
-                    player.seekTo(newPosition)
-                    skipDirectionTextView.text = if (amount < 0) "-10s" else "+10s"
-                    val params = skipDirectionTextView.layoutParams as RelativeLayout.LayoutParams
-                    if (amount < 0) {
-                        params.addRule(RelativeLayout.ALIGN_PARENT_LEFT)
-                        params.removeRule(RelativeLayout.ALIGN_PARENT_RIGHT)
-                    } else {
-                        params.addRule(RelativeLayout.ALIGN_PARENT_RIGHT)
-                        params.removeRule(RelativeLayout.ALIGN_PARENT_LEFT)
-                    }
-                    skipDirectionTextView.layoutParams = params
-                    skipDirectionTextView.visibility = View.VISIBLE
+                if (::player.isInitialized && player.duration > 0) {
+                    val newPosition = max(0, min(player.duration, player.currentPosition + amount))
+                    if (player.playbackState == Player.STATE_READY) {
+                        player.seekTo(newPosition)
+                        skipDirectionTextView.text = if (amount < 0) "-10s" else "+10s"
+                        val params = skipDirectionTextView.layoutParams as RelativeLayout.LayoutParams
+                        if (amount < 0) {
+                            params.addRule(RelativeLayout.ALIGN_PARENT_LEFT)
+                            params.removeRule(RelativeLayout.ALIGN_PARENT_RIGHT)
+                        } else {
+                            params.addRule(RelativeLayout.ALIGN_PARENT_RIGHT)
+                            params.removeRule(RelativeLayout.ALIGN_PARENT_LEFT)
+                        }
+                        skipDirectionTextView.layoutParams = params
+                        skipDirectionTextView.visibility = View.VISIBLE
 
-                    handler.removeCallbacks(hideSkipDirectionRunnable)
-                    handler.postDelayed(hideSkipDirectionRunnable, 1000)
-                } else {
-                    Log.w("Player", "Cannot seek: Player not in READY state (state=${player.playbackState})")
+                        handler.removeCallbacks(hideSkipDirectionRunnable)
+                        handler.postDelayed(hideSkipDirectionRunnable, 1000)
+                    } else {
+                        Log.w("Player", "Cannot seek: Player not in READY state (state=${player.playbackState})")
+                    }
                 }
             }
         })
@@ -747,7 +958,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupSeekBars() {
         videoSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                if (fromUser && player.duration > 0) {
+                if (fromUser && ::player.isInitialized && player.duration > 0) {
                     val seekPosition = (player.duration * progress) / 100
                     if (player.playbackState == Player.STATE_READY) {
                         player.seekTo(seekPosition)
@@ -756,7 +967,6 @@ class MainActivity : AppCompatActivity() {
                         seekTimeTextView.visibility = View.VISIBLE
                         handler.removeCallbacks(hideSeekTimeRunnable)
                         handler.postDelayed(hideSeekTimeRunnable, hideControlsDelay)
-                        resetHideControlsTimer()
                         if (!isUsingEmbeddedSubtitles) {
                             updateSubtitles(seekPosition)
                         }
@@ -780,14 +990,46 @@ class MainActivity : AppCompatActivity() {
         })
 
         brightnessSeekBar.setOnProgressChangeListener { progress ->
-            brightnessContainer.visibility = View.VISIBLE
-            brightnessOverlay.visibility = View.VISIBLE
+            // Fade in if not already visible
+            if (brightnessContainer.visibility != View.VISIBLE) {
+                brightnessContainer.alpha = 0f
+                brightnessOverlay.alpha = 0f
+                brightnessContainer.visibility = View.VISIBLE
+                brightnessOverlay.visibility = View.VISIBLE
+                brightnessContainer.animate()
+                    .alpha(1f)
+                    .setDuration(200)
+                    .start()
+                brightnessOverlay.animate()
+                    .alpha(1f)
+                    .setDuration(200)
+                    .start()
+            }
+
             brightnessText.text = "$progress%"
             val brightness = progress / 100f
             val lp = window.attributes
             lp.screenBrightness = if (brightness == 0f) 0.01f else brightness
             window.attributes = lp
-            handler.postDelayed(hideBrightnessOverlayRunnable, 1000)
+
+            // Schedule fade out
+            handler.removeCallbacks(hideBrightnessOverlayRunnable)
+            handler.postDelayed({
+                brightnessContainer.animate()
+                    .alpha(0f)
+                    .setDuration(200)
+                    .withEndAction {
+                        brightnessContainer.visibility = View.GONE
+                    }
+                    .start()
+                brightnessOverlay.animate()
+                    .alpha(0f)
+                    .setDuration(200)
+                    .withEndAction {
+                        brightnessOverlay.visibility = View.GONE
+                    }
+                    .start()
+            }, 1000)
         }
 
         player.addListener(object : Player.Listener {
@@ -825,7 +1067,16 @@ class MainActivity : AppCompatActivity() {
             handler.postDelayed(hideVolumeRunnable, 1000)
         }
     }
-
+    private fun setupBackButton() {
+        back.setOnClickListener {
+            val intent = Intent(this, VideoListActivity::class.java)
+            // Optional: Add flags to clear the activity stack if you don't want to return to this activity
+            intent.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            startActivity(intent)
+            // Optional: Finish the current activity to remove it from the back stack
+            finish()
+        }
+    }
     private fun setupNewButtons() {
         lockButton.setOnClickListener {
             toggleLock()
@@ -855,16 +1106,13 @@ class MainActivity : AppCompatActivity() {
             showAudioSubtitleDialog()
             resetHideControlsTimer()
         }
-        aspectRatioButton.setOnClickListener { // Add this
+
+        aspectRatioButton.setOnClickListener {
             showAspectRatioDialog()
             resetHideControlsTimer()
         }
     }
 
-    private fun setupZoomButton() {
-        // Since the zoom button is not in the UI as per the screenshot, this method can be used if you decide to add it back
-        // For now, we'll leave it empty or you can add a zoom button in the layout if needed
-    }
 
     private fun toggleLock() {
         isLocked = !isLocked
@@ -875,48 +1123,37 @@ class MainActivity : AppCompatActivity() {
         if (isLocked) {
             Toast.makeText(this, "Controls locked", Toast.LENGTH_SHORT).show()
             hideControls()
+            // Fade in the unlock icon
+            unlockIcon.alpha = 0f
+            unlockIcon.visibility = View.VISIBLE
+            unlockIcon.animate()
+                .alpha(1f)
+                .setDuration(200)
+                .start()
+            // Ensure lockButton is visible initially
+            lockButton.visibility = View.VISIBLE
+            lockText.visibility = View.VISIBLE
+            handler.removeCallbacks(hideLockButtonRunnable)
+            handler.postDelayed(hideLockButtonRunnable, hideControlsDelay)
         } else {
             Toast.makeText(this, "Controls unlocked", Toast.LENGTH_SHORT).show()
             showControls()
+            // Fade out the unlock icon
+            unlockIcon.animate()
+                .alpha(0f)
+                .setDuration(200)
+                .withEndAction {
+                    unlockIcon.visibility = View.GONE
+                }
+                .start()
         }
     }
-    private fun showAspectRatioDialog() { // Renamed from showZoomOptionsDialog
-        val builder = AlertDialog.Builder(this, R.style.CustomAlertDialog)
-        builder.setTitle("Select Aspect Ratio") // Updated title
 
-        val options = arrayOf(
-            "Fill", "Fit", "Original", "Stretch",
-            "16:9", "4:3", "18:9", "19.5:9", "20:9", "21:9"
-        )
-
-        builder.setItems(options) { _, which ->
-            when (which) {
-                0 -> applyScaleMode(VideoScaleMode.FILL)
-                1 -> applyScaleMode(VideoScaleMode.FIT)
-                2 -> applyScaleMode(VideoScaleMode.ORIGINAL)
-                3 -> applyScaleMode(VideoScaleMode.STRETCH)
-                4 -> applyScaleMode(VideoScaleMode.RATIO_16_9)
-                5 -> applyScaleMode(VideoScaleMode.RATIO_4_3)
-                6 -> applyScaleMode(VideoScaleMode.RATIO_18_9)
-                7 -> applyScaleMode(VideoScaleMode.RATIO_19_5_9)
-                8 -> applyScaleMode(VideoScaleMode.RATIO_20_9)
-                9 -> applyScaleMode(VideoScaleMode.RATIO_21_9)
-            }
-        }
-
-        builder.setNegativeButton("Cancel") { dialog, _ -> dialog.dismiss() }
-
-        val dialog = builder.create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(Color.WHITE)
-        }
-        dialog.show()
-    }
     private fun showSpeedDialog() {
         val builder = AlertDialog.Builder(this, R.style.CustomAlertDialog)
         builder.setTitle("Select Playback Speed")
 
-        val speeds = arrayOf("0.25x", "0.5x", "0.75x", "1.0x", "1.25x","1.40", "1.5x","1.60", "1.75x", "2.0x")
+        val speeds = arrayOf("0.25x", "0.5x", "0.75x", "1.0x", "1.25x", "1.40", "1.5x", "1.60", "1.75x", "2.0x")
         builder.setItems(speeds) { _, which ->
             val speed = when (which) {
                 0 -> 0.25f
@@ -933,6 +1170,7 @@ class MainActivity : AppCompatActivity() {
             }
             player.playbackParameters = PlaybackParameters(speed)
             speedText.text = "Speed (${speeds[which]})"
+            sharedPreferences.edit().putFloat("playback_speed", speed).apply()
             Toast.makeText(this, "Speed set to ${speeds[which]}", Toast.LENGTH_SHORT).show()
         }
 
@@ -944,7 +1182,6 @@ class MainActivity : AppCompatActivity() {
         }
         dialog.show()
     }
-
     private fun showAudioSubtitleDialog() {
         val builder = AlertDialog.Builder(this, R.style.CustomAlertDialog)
         builder.setTitle("Audio & Subtitles")
@@ -972,23 +1209,29 @@ class MainActivity : AppCompatActivity() {
             windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
             windowInsetsController.systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         } else {
             windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        }
+        this.isFullScreen = isFullScreen
 
+        // Reset zoom and subtitle size when exiting full-screen mode
+        if (!isFullScreen) {
             playerView.videoSurfaceView?.apply {
                 scaleX = 1f
                 scaleY = 1f
                 translationX = 0f
                 translationY = 0f
             }
-
             subtitleTextView.textSize = baseSubtitleSize
         }
-        this.isFullScreen = isFullScreen
     }
-
+    private fun setupUnlockIcon() {
+        unlockIcon.setOnClickListener {
+            if (isLocked) {
+                toggleLock() // Unlock the screen
+            }
+        }
+    }
     private fun toggleControlsVisibility() {
         if (areControlsVisible) {
             hideControls()
@@ -996,7 +1239,10 @@ class MainActivity : AppCompatActivity() {
             showControls()
         }
     }
-
+    private val hideLockButtonRunnable = Runnable {
+        lockButton.visibility = View.GONE
+        lockText.visibility = View.GONE
+    }
     private fun showControls() {
         areControlsVisible = true
         bottomControls.visibility = View.VISIBLE
@@ -1011,9 +1257,19 @@ class MainActivity : AppCompatActivity() {
         speedText.visibility = View.VISIBLE
         aspectRatioButton.visibility = View.VISIBLE
         lockText.visibility = View.VISIBLE
+        back.visibility = View.VISIBLE
         audioSubtitleText.visibility = View.VISIBLE
         aspectRatioText.visibility = View.VISIBLE
+        // Fade out the unlock icon
+        unlockIcon.animate()
+            .alpha(0f)
+            .setDuration(200)
+            .withEndAction {
+                unlockIcon.visibility = View.GONE
+            }
+            .start()
         handler.removeCallbacks(hideControlsRunnable)
+        handler.removeCallbacks(hideLockButtonRunnable)
         handler.postDelayed(hideControlsRunnable, hideControlsDelay)
     }
 
@@ -1026,13 +1282,31 @@ class MainActivity : AppCompatActivity() {
         videoSeekBar.visibility = View.GONE
         videoTitleTextView.visibility = View.GONE
         speedButton.visibility = View.GONE
-        lockButton.visibility = View.GONE
         audioSubtitleButton.visibility = View.GONE
         speedText.visibility = View.GONE
-        lockText.visibility = View.GONE
         aspectRatioButton.visibility = View.GONE
         audioSubtitleText.visibility = View.GONE
         aspectRatioText.visibility = View.GONE
+        back.visibility = View.GONE
+        if (isLocked) {
+            lockButton.visibility = View.VISIBLE
+            lockText.visibility = View.VISIBLE
+            lockIcon.visibility = View.VISIBLE
+            unlockIcon.alpha = 1f // Ensure alpha is 1 in case an animation was interrupted
+            unlockIcon.visibility = View.VISIBLE // Ensure unlock icon stays visible
+            handler.postDelayed(hideLockButtonRunnable, hideControlsDelay)
+        } else {
+            lockButton.visibility = View.GONE
+            lockText.visibility = View.GONE
+            // Fade out the unlock icon
+            unlockIcon.animate()
+                .alpha(0f)
+                .setDuration(200)
+                .withEndAction {
+                    unlockIcon.visibility = View.GONE
+                }
+                .start()
+        }
         handler.removeCallbacks(hideControlsRunnable)
     }
 
@@ -1043,12 +1317,25 @@ class MainActivity : AppCompatActivity() {
         val options = mutableListOf<String>()
         val trackGroups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
 
+        // Add "None" option first
         options.add("None (Disable subtitles)")
+
+        // Add embedded tracks
         trackGroups.forEachIndexed { index, group ->
             val format = group.mediaTrackGroup.getFormat(0)
             val language = format.language ?: "Unknown ($index)"
-            options.add("Track: $language")
+            options.add("Embedded: $language")
         }
+
+        // Add external subtitle option if available
+        currentVideoUri?.let { videoUri ->
+            subtitleUris[videoUri]?.let { subtitleUri ->
+                val subtitleName = getVideoTitleFromUri(subtitleUri)
+                options.add("External: ${subtitleName.substringAfterLast('.').take(10)}")
+            }
+        }
+
+        // Always show "Load external subtitles" option
         options.add("Load external subtitles")
         options.add("Customize subtitles")
 
@@ -1058,6 +1345,17 @@ class MainActivity : AppCompatActivity() {
                 which <= trackGroups.size -> {
                     val selectedGroup = trackGroups[which - 1]
                     enableEmbeddedSubtitle(selectedGroup)
+                    isUsingEmbeddedSubtitles = true
+                    Toast.makeText(this, "Embedded subtitles enabled", Toast.LENGTH_SHORT).show()
+                }
+                which == trackGroups.size + 1 && currentVideoUri?.let { subtitleUris[it] != null } == true -> {
+                    currentVideoUri?.let { videoUri ->
+                        subtitleUris[videoUri]?.let {
+                            loadSubtitles(it)
+                            isUsingEmbeddedSubtitles = false
+                            Toast.makeText(this, "External subtitles enabled", Toast.LENGTH_SHORT).show()
+                        }
+                    }
                 }
                 which == options.size - 2 -> pickSubtitle()
                 which == options.size - 1 -> showSubtitleCustomizationDialog()
@@ -1072,7 +1370,6 @@ class MainActivity : AppCompatActivity() {
         }
         dialog.show()
     }
-
     private fun showSubtitleCustomizationDialog() {
         val builder = AlertDialog.Builder(this, R.style.CustomAlertDialog)
         builder.setTitle("Customize Subtitles")
@@ -1081,7 +1378,7 @@ class MainActivity : AppCompatActivity() {
             "Change Color",
             "Change Size",
             "Toggle Background",
-            "Toggle Shadow"
+            "Adjust Shadow Intensity"
         )
 
         builder.setItems(options) { _, which ->
@@ -1089,7 +1386,7 @@ class MainActivity : AppCompatActivity() {
                 0 -> showColorSelectionDialog()
                 1 -> showSizeSeekBarDialog()
                 2 -> toggleSubtitleBackground()
-                3 -> toggleSubtitleShadow()
+                3 -> showShadowIntensityDialog()
             }
         }
 
@@ -1101,7 +1398,55 @@ class MainActivity : AppCompatActivity() {
         }
         dialog.show()
     }
+    private fun showShadowIntensityDialog() {
+        val dialog = Dialog(this, R.style.CustomDialog)
+        dialog.setContentView(R.layout.dialog_shadow_intensity)
+        dialog.setTitle("Adjust Shadow Intensity")
 
+        dialog.window?.setBackgroundDrawableResource(R.drawable.dialog_background)
+
+        val seekBar = dialog.findViewById<SeekBar>(R.id.shadowIntensitySeekBar) ?: return
+        val intensityPreview = dialog.findViewById<TextView>(R.id.intensityPreview) ?: return
+
+        // Load saved shadow intensity (default to 100% if not set)
+        val savedShadowIntensity = sharedPreferences.getInt("subtitle_shadow_intensity", 100)
+        seekBar.progress = savedShadowIntensity
+
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val intensity = progress / 100f // Convert to 0.0 to 1.0
+                intensityPreview.text = "Shadow Intensity: ${progress}%"
+                currentSubtitleShadowIntensity = intensity
+                updateSubtitleAppearance()
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                // Save the shadow intensity globally
+                sharedPreferences.edit().putInt("subtitle_shadow_intensity", seekBar?.progress ?: 100).apply()
+            }
+        })
+
+        // Initialize preview
+        intensityPreview.text = "Shadow Intensity: ${savedShadowIntensity}%"
+
+        dialog.findViewById<Button>(R.id.btnOk)?.apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#FF5722"))
+            setOnClickListener {
+                sharedPreferences.edit().putInt("subtitle_shadow_intensity", seekBar.progress).apply()
+                dialog.dismiss()
+            }
+        }
+
+        dialog.findViewById<Button>(R.id.btnCancel)?.apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#607D8B"))
+            setOnClickListener { dialog.dismiss() }
+        }
+
+        dialog.show()
+    }
     private fun showColorSelectionDialog() {
         val dialog = Dialog(this, R.style.CustomDialog)
         dialog.setContentView(R.layout.dialog_color_picker)
@@ -1177,6 +1522,8 @@ class MainActivity : AppCompatActivity() {
 
         dialog.show()
     }
+    private var currentSubtitleShadowIntensity = 1.0f // Default to full intensity
+
 
     private fun showSizeSeekBarDialog() {
         val dialog = Dialog(this, R.style.CustomDialog)
@@ -1235,34 +1582,34 @@ class MainActivity : AppCompatActivity() {
         updateSubtitleAppearance()
     }
 
-    private fun toggleSubtitleShadow() {
-        currentSubtitleShadow = !currentSubtitleShadow
-        updateSubtitleAppearance()
-    }
+
 
     private fun updateSubtitleAppearance() {
         subtitleTextView.apply {
+            // Remove any existing shadow
+            setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
+
+            // Create a text border (stroke) effect
+            val strokeWidth = 2f // Adjust border thickness as needed
+            val strokeColor = Color.BLACK
+
+            // Create a spannable string with stroke effect
+            val text = text?.toString() ?: ""
+            val spannable = SpannableString(text)
+            spannable.setSpan(
+                StrokeSpan(strokeColor, strokeWidth),
+                0, text.length,
+                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+
+            setText(spannable, TextView.BufferType.SPANNABLE)
             setTextColor(currentSubtitleColor)
             textSize = currentSubtitleSize
             setBackgroundColor(currentSubtitleBackground)
-            if (currentSubtitleShadow) {
-                setShadowLayer(4f, 2f, 2f, Color.BLACK)
-            } else {
-                setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
-            }
         }
         baseSubtitleSize = currentSubtitleSize
         saveSubtitleSettings()
     }
-
-    private fun isBassBoostSupported(): Boolean {
-        return BassBoost(0, 0).run {
-            val supported = hasControl()
-            release()
-            supported
-        }
-    }
-
     private fun showAudioDialog() {
         val builder = AlertDialog.Builder(this, R.style.CustomAlertDialog)
         builder.setTitle("Audio Tracks")
@@ -1308,6 +1655,12 @@ class MainActivity : AppCompatActivity() {
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
             .clearOverridesOfType(C.TRACK_TYPE_TEXT)
             .build()
+        videoUri?.let { currentVideoUri ->
+            subtitleUris.remove(currentVideoUri)
+            sharedPreferences.edit().remove("subtitleUri_$currentVideoUri").apply()
+        }
+        currentSubtitleUri = null
+
     }
 
     private fun enableEmbeddedSubtitle(group: Tracks.Group) {
@@ -1331,7 +1684,6 @@ class MainActivity : AppCompatActivity() {
 
         trackSelector.parameters = parameters
     }
-
     private fun launchVideoList() {
         val intent = Intent(this, VideoListActivity::class.java)
         startActivityForResult(intent, PICK_VIDEO_REQUEST)
@@ -1370,9 +1722,20 @@ class MainActivity : AppCompatActivity() {
             }
             PICK_SUBTITLE_REQUEST -> {
                 if (resultCode == RESULT_OK && data != null) {
-                    subtitleUri = data.data
-                    if (subtitleUri != null) {
-                        loadSubtitles(subtitleUri!!)
+                    currentSubtitleUri = data.data
+                    if (currentSubtitleUri != null) {
+                        try {
+                            contentResolver.takePersistableUriPermission(currentSubtitleUri!!, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            videoUri?.let { currentVideoUri ->
+                                subtitleUris[currentVideoUri] = currentSubtitleUri
+                                sharedPreferences.edit().putString("subtitleUri_$currentVideoUri", currentSubtitleUri.toString()).apply()
+                                Log.d("VideoPlayback", "Saved subtitle URI for $currentVideoUri: $currentSubtitleUri")
+                                loadSubtitles(currentSubtitleUri!!)
+                            }
+                        } catch (e: SecurityException) {
+                            Log.e("MainActivity", "Failed to take persistable permission for subtitle: ${e.message}")
+                            Toast.makeText(this, "Failed to access subtitle: Permission denied", Toast.LENGTH_LONG).show()
+                        }
                     } else {
                         Toast.makeText(this, "Failed to get subtitle URI", Toast.LENGTH_SHORT).show()
                     }
@@ -1382,12 +1745,35 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-
     private fun playVideo(uri: Uri) {
         try {
-            Log.d("VideoPlayback", "URI: $uri")
-            Log.d("VideoPlayback", "URI path: ${uri.path}")
+            videoUri = uri
+            currentVideoUri = uri
+            Log.d("VideoPlayback", "Playing video: $uri")
+            Log.d("VideoPlayback", "Checking subtitle for URI: $uri, subtitleUris: $subtitleUris")
 
+            // Clear previous subtitles only if the video URI has changed
+            if (currentVideoUri != uri) {
+                subtitles = emptyList()
+                subtitleTextView.visibility = View.GONE
+                Log.d("VideoPlayback", "Cleared subtitles for new video")
+            }
+
+            currentSubtitleUri = subtitleUris[uri]
+            if (currentSubtitleUri != null) {
+                try {
+                    loadSubtitles(currentSubtitleUri!!)
+                    isUsingEmbeddedSubtitles = false
+                    Log.d("VideoPlayback", "Loaded saved subtitles for $uri")
+                } catch (e: Exception) {
+                    Log.e("VideoPlayback", "Failed to load saved subtitles", e)
+                    subtitleUris.remove(uri)
+                    currentSubtitleUri = null
+                }
+            } else {
+                // Disable subtitles if no saved ones found
+                disableSubtitles()
+            }
             val savedPosition = sharedPreferences.getLong(uri.toString(), 0L)
             if (savedPosition > 0) {
                 continueTextView.text = "Continue from ${formatTime(savedPosition / 1000)}?"
@@ -1411,7 +1797,23 @@ class MainActivity : AppCompatActivity() {
             if (savedPosition <= 0) {
                 player.playWhenReady = true
             }
-            applyScaleMode(VideoScaleMode.FIT)
+
+            // Apply global speed and aspect ratio
+            val savedSpeed = sharedPreferences.getFloat("playback_speed", 1.0f)
+            player.playbackParameters = PlaybackParameters(savedSpeed)
+            currentScaleMode = VideoScaleMode.values()[sharedPreferences.getInt("aspect_ratio_mode", VideoScaleMode.FIT.ordinal)]
+            applyScaleMode(currentScaleMode)
+
+            // Automatically load subtitles for this specific video if available
+            currentSubtitleUri = subtitleUris[uri]
+            Log.d("VideoPlayback", "Current subtitle URI for $uri: $currentSubtitleUri")
+            if (currentSubtitleUri != null) {
+                loadSubtitles(currentSubtitleUri!!)
+                Log.d("VideoPlayback", "Loaded subtitles from $currentSubtitleUri")
+            } else {
+                disableSubtitles()
+                Log.d("VideoPlayback", "No subtitle found for $uri, disabling subtitles")
+            }
 
             player.volume = 1.0f
             updateTimeDisplays()
@@ -1425,7 +1827,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Error playing video: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
-
     private fun loadSubtitles(uri: Uri) {
         try {
             val inputStream = contentResolver.openInputStream(uri)
@@ -1472,14 +1873,20 @@ class MainActivity : AppCompatActivity() {
                 .buildUpon()
                 .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                 .build()
+            videoUri?.let { currentVideoUri ->
+                currentSubtitleUri = uri
+                subtitleUris[currentVideoUri] = currentSubtitleUri
+                sharedPreferences.edit()
+                    .putString("subtitleUri_$currentVideoUri", uri.toString())
+                    .apply()
+                Log.d("Subtitles", "Saved subtitle URI for video $currentVideoUri")
+            }
             updateSubtitles(player.currentPosition)
-            Toast.makeText(this, "Subtitles loaded (${subtitleList.size} entries)", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
             Log.e("Subtitles", "Failed to load subtitles: ${e.message}", e)
             Toast.makeText(this, "Failed to load subtitles: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
-
     private fun parseSrtTime(timeStr: String): Long {
         try {
             val parts = timeStr.split(":", ",")
@@ -1503,32 +1910,50 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun getVideoTitleFromUri(uri: Uri): String {
-        contentResolver.query(uri, null, null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val displayNameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (displayNameIndex != -1) {
-                    return cursor.getString(displayNameIndex) ?: "Unknown Video"
+        return try {
+            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val displayNameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (displayNameIndex != -1) {
+                        return cursor.getString(displayNameIndex) ?: "Unknown Subtitle"
+                    }
                 }
             }
+            uri.lastPathSegment?.substringAfterLast('/') ?: "Unknown Subtitle"
+        } catch (e: SecurityException) {
+            Log.e("MainActivity", "Permission denied accessing URI: ${e.message}")
+            "Unknown Subtitle (Permission Denied)"
         }
-        return uri.lastPathSegment?.substringAfterLast('/') ?: "Unknown Video"
     }
-
     private fun updateTimeDisplays() {
-        if (::player.isInitialized) {
-            val currentPosition = player.currentPosition / 1000
-            val totalDuration = player.duration / 1000
-            leftTimeTextView.text = formatTime(currentPosition)
-            rightTimeTextView.text = if (totalDuration > 0) formatTime(totalDuration) else "0:00"
+        if (::player.isInitialized && player.duration > 0) {
+            val currentPosition = player.currentPosition
+            val duration = player.duration
+
+            // Format time based on duration
+            val currentTimeText = formatTime(currentPosition / 1000)
+            val durationTimeText = formatTime(duration / 1000)
+
+            leftTimeTextView.text = currentTimeText
+            rightTimeTextView.text = if (showRemainingTime) {
+                formatTime((duration - currentPosition) / 1000)
+            } else {
+                durationTimeText
+            }
         }
     }
 
-    private fun formatTime(seconds: Long): String {
-        val minutes = seconds / 60
-        val secs = seconds % 60
-        return String.format("%d:%02d", minutes, secs)
+    private fun formatTime(timeInSeconds: Long): String {
+        return if (timeInSeconds * 1000 > 60 * 60 * 1000) { // Greater than 60 minutes
+            String.format("%d:%02d:%02d", timeInSeconds / 3600, (timeInSeconds % 3600) / 60, timeInSeconds % 60)
+        } else {
+            String.format("%02d:%02d", (timeInSeconds % 3600) / 60, timeInSeconds % 60)
+        }
     }
-
+    private fun toggleRemainingTime() {
+        showRemainingTime = !showRemainingTime
+        updateTimeDisplays()
+    }
     private fun seekRelative(amount: Long) {
         val newPosition = max(0, min(player.duration, player.currentPosition + amount))
         if (player.playbackState == Player.STATE_READY) {
@@ -1575,6 +2000,7 @@ class MainActivity : AppCompatActivity() {
         if (::player.isInitialized && player.playWhenReady) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
+        setFullScreenMode(isFullScreen)
     }
 
     override fun onDestroy() {
@@ -1587,6 +2013,22 @@ class MainActivity : AppCompatActivity() {
         if (::player.isInitialized) {
             player.release()
         }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Handle orientation changes
+        setFullScreenMode(isFullScreen)
+        // Reapply the aspect ratio to ensure the video scales correctly
+        applyScaleMode(currentScaleMode)
+        // Update subtitle position if needed
+        subtitleTextView.post {
+            val params = subtitleTextView.layoutParams as RelativeLayout.LayoutParams
+            params.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
+            params.addRule(RelativeLayout.CENTER_HORIZONTAL)
+            subtitleTextView.layoutParams = params
+        }
+        unlockIcon.visibility = if (isLocked) View.VISIBLE else View.GONE
     }
 
     inner class SubTitleDragListener : View.OnTouchListener {
@@ -1619,6 +2061,7 @@ class MainActivity : AppCompatActivity() {
                     v.y = initialY + (event.rawY - initialTouchY)
                     v.x = max(0f, min(v.x, screenWidth - v.measuredWidth))
                     v.y = max(0f, min(v.y, screenHeight - v.measuredHeight))
+                    v.y = max(screenHeight * 0.5f, min(v.y, screenHeight - v.measuredHeight))
                     v.visibility = View.VISIBLE
                     return true
                 }
