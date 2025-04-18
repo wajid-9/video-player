@@ -3,54 +3,62 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:orientation="horizontal"
-    android:padding="8dp">
+    android:padding="8dp"
+    android:background="@color/material_dynamic_neutral0"> <!-- Dark card background -->
 
-    <RelativeLayout
-        android:layout_width="80dp"
-        android:layout_height="60dp">
-
-        <ImageView
-            android:id="@+id/videoThumbnail"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:scaleType="centerCrop"
-            android:src="@drawable/play" />
-
-
-    </RelativeLayout>
+    <ImageView
+        android:id="@+id/videoThumbnail"
+        android:layout_width="100dp"
+        android:layout_height="150dp"
+        android:scaleType="centerCrop"
+        android:contentDescription="Episode thumbnail"
+        android:src="@drawable/placeholder" />
 
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="1"
         android:orientation="vertical"
-        android:paddingStart="8dp">
+        android:layout_marginStart="8dp">
 
         <TextView
             android:id="@+id/videoTitle"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:ellipsize="end"
-            android:maxLines="1"
-            android:textSize="16sp" />
-
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:textColor="#FFFFFF" />
 
         <TextView
             android:id="@+id/videoDuration"
-            android:layout_width="match_parent"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textSize="14sp"
-            android:textColor="@android:color/darker_gray" />
+            android:textColor="#CCCCCC" />
+
+        <TextView
+            android:id="@+id/tmdbReleaseDate"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:textColor="#CCCCCC"
+            android:hint="Release Date: N/A" />
+
+        <TextView
+            android:id="@+id/tmdbRating"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:textColor="#CCCCCC"
+            android:hint="Rating: N/A" />
 
     </LinearLayout>
+
     <ImageView
         android:id="@+id/moreIcon"
-        android:layout_width="20dp"
-        android:layout_height="20dp"
-        android:layout_alignParentEnd="true"
-        android:layout_margin="4dp"
-        android:background="?attr/selectableItemBackgroundBorderless"
-        android:contentDescription="More actions"
-        android:padding="2dp"
-        android:src="@android:drawable/ic_menu_more" />
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:src="@drawable/ic_more_vert"
+        android:contentDescription="More options"
+        android:layout_gravity="center" />
 </LinearLayout>

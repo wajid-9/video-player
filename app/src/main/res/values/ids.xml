@@ -5,4 +5,51 @@
     <item name="zoomContainer" type="id" />
     <item name="zoomLayout" type="id" />
     <item name="speedSeekBar" type="id" />
+    <item name="relativeLayoutRoot" type="id" />
+    <item name="playerView" type="id" />
+    <item name="playImageView" type="id" />
+    <item name="playPauseButton" type="id" />
+    <item name="continueTextView" type="id" />
+    <item name="centerControls" type="id" />
+    <item name="rewindButton" type="id" />
+    <item name="forwardButton" type="id" />
+    <item name="topControls" type="id" />
+    <item name="back" type="id" />
+    <item name="videoTitleTextView" type="id" />
+    <item name="controlsLayout" type="id" />
+    <item name="bottomControls" type="id" />
+    <item name="lefttime" type="id" />
+    <item name="videoSeekBar" type="id" />
+    <item name="righttime" type="id" />
+    <item name="bottomButtons" type="id" />
+    <item name="speedButton" type="id" />
+    <item name="speedText" type="id" />
+    <item name="lockButton" type="id" />
+    <item name="lock_ic" type="id" />
+    <item name="lockText" type="id" />
+    <item name="orientationLockButton" type="id" />
+    <item name="orientationLockIcon" type="id" />
+    <item name="orientationLockText" type="id" />
+    <item name="aspectRatioButton" type="id" />
+    <item name="aspectRatioIcon" type="id" />
+    <item name="aspectRatioText" type="id" />
+    <item name="audioSubtitleButton" type="id" />
+    <item name="audioSubtitleText" type="id" />
+    <item name="skipDirectionContainer" type="id" />
+    <item name="skipDirectionTextView" type="id" />
+    <item name="subtitleTextView" type="id" />
+    <item name="seekTimeTextView" type="id" />
+    <item name="speedTextContainer" type="id" />
+    <item name="twoxTimeTextView" type="id" />
+    <item name="brightnessContainer" type="id" />
+    <item name="BrightnessSeekBar" type="id" />
+    <item name="brightnessText" type="id" />
+    <item name="volumeContainer" type="id" />
+    <item name="VolumeSeekBar" type="id" />
+    <item name="volumeText" type="id" />
+    <item name="brightnessOverlay" type="id" />
+    <item name="tvVolumeValue" type="id" />
+    <item name="unlockIcon" type="id" />
+    <item name="tmdb_overview" type="id" />
+    <item name="tmdb_rating" type="id" />
 </resources>

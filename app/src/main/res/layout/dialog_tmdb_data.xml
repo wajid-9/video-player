@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="@color/material_dynamic_neutral0">
+
+    <!-- Poster and Title Row -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingBottom="8dp">
+
+        <!-- Poster -->
+        <ImageView
+            android:id="@+id/tmdb_poster"
+            android:layout_width="100dp"
+            android:layout_height="150dp"
+            android:scaleType="centerCrop"
+            android:contentDescription="Poster"
+            android:src="@drawable/placeholder" />
+
+        <!-- Title and Type -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:paddingStart="12dp"
+            android:paddingEnd="8dp">
+
+            <TextView
+                android:id="@+id/tmdb_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="18sp"
+                android:textStyle="bold"
+                android:textColor="@android:color/white"
+                android:text="Title" />
+
+            <TextView
+                android:id="@+id/tmdb_type"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="14sp"
+                android:textColor="@android:color/darker_gray"
+                android:text="Type"
+                android:paddingTop="4dp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Season/Episode (for TV shows) -->
+    <TextView
+        android:id="@+id/tmdb_season_episode"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="14sp"
+        android:textColor="@android:color/black"
+        android:paddingTop="8dp"
+        android:visibility="gone" />
+
+    <!-- Release Date -->
+    <TextView
+        android:id="@+id/tmdb_release_date"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textSize="14sp"
+        android:textColor="@android:color/white"
+        android:paddingTop="8dp"
+        android:text="Release Date: Not available" />
+
+    <!-- Rating with Star Icon -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingTop="8dp"
+        android:gravity="center_vertical">
+
+        <ImageView
+            android:id="@+id/tmdb_rating_icon"
+            android:layout_width="16dp"
+            android:layout_height="16dp"
+            android:src="@drawable/ic_star"
+            android:contentDescription="Rating Icon" />
+
+        <TextView
+            android:id="@+id/tmdb_rating"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:textColor="@android:color/white"
+            android:paddingStart="4dp"
+            android:text="Not rated" />
+    </LinearLayout>
+
+    <!-- Overview (Scrollable) -->
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingTop="8dp"
+        android:layout_marginTop="8dp">
+
+        <TextView
+            android:id="@+id/tmdb_overview"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:textColor="@android:color/white"
+            android:text="No description available"
+            android:maxLines="10"
+            android:ellipsize="end" />
+    </ScrollView>
+
+</LinearLayout>

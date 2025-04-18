@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="view_modes">
+        <item>List View</item>
+        <item>Grid View</item>
+        <item>Favorites</item>
+        <item>Group by Title</item>
+        <item>Sort by Name (A-Z)</item>
+        <item>Sort by Name (Z-A)</item>
+        <item>Sort by Length (Shortest)</item>
+        <item>Sort by Length (Longest)</item>
+        <item>Sort by Date (Newest)</item>
+        <item>Sort by Date (Oldest)</item>
+    </string-array>
+</resources>

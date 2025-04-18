@@ -1,3 +1,5 @@
+import org.gradle.kotlin.dsl.annotationProcessor
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -35,24 +37,31 @@ android {
         jvmTarget = "11"
     }
 }
-
 dependencies {
-
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
     implementation(libs.androidx.activity)
     implementation(libs.androidx.constraintlayout)
-    implementation (libs.androidx.appcompat.v161)
-    implementation (libs.exoplayer)
+    implementation(libs.androidx.appcompat.v161)
+    implementation(libs.exoplayer)
     testImplementation(libs.junit)
-    implementation (libs.androidx.core.ktx.v170)
-    implementation ("com.github.bumptech.glide:glide:4.12.0")
-    implementation ("com.github.duanhong169:colorpicker:1.1.6")
-    implementation ("com.github.lukelorusso:VerticalSeekBar:1.2.7")
-    implementation("com.otaliastudios:zoomlayout:1.9.0")
-    implementation (libs.exoplayer)
+    implementation(libs.androidx.core.ktx.v170)
+    implementation(libs.glide)
+    implementation(libs.colorpicker)
+    implementation(libs.verticalseekbar)
+    implementation(libs.zoomlayout)
+    implementation(libs.androidx.swiperefreshlayout)
+    implementation (libs.retrofit)
+    implementation ("com.arthenica:ffmpeg-kit-full:6.0-2")
+    implementation ("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    annotationProcessor ("com.github.bumptech.glide:compiler:4.12.0")
+    implementation ("com.squareup.retrofit2:converter-gson:2.11.0")
+    implementation("com.squareup.retrofit2:converter-scalars:2.11.0")
+    implementation("com.github.AtifSayings:Animatoo:1.0.1")
+    implementation ("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3") 
+    implementation ("com.google.code.gson:gson:2.10.1")
     androidTestImplementation(libs.androidx.junit)
-    implementation ("androidx.media3:media3-exoplayer:1.3.1")
+    implementation(libs.androidx.media3.exoplayer)
     androidTestImplementation(libs.androidx.espresso.core)
 }

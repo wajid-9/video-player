@@ -1,6 +1,7 @@
 package com.example.videoplayer
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Dialog
 import android.content.Intent
 import android.content.pm.ActivityInfo
@@ -8,7 +9,6 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.PorterDuff
 import android.media.AudioManager
-import android.media.audiofx.BassBoost
 import android.media.audiofx.LoudnessEnhancer
 import android.net.Uri
 import android.os.Build
@@ -40,16 +40,29 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import android.content.SharedPreferences
 import android.content.res.Configuration
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
+import android.provider.DocumentsContract
 import android.text.Spannable
 import android.text.SpannableString
-import com.google.android.exoplayer2.audio.AudioAttributes
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.ReturnCode
 import kotlin.math.abs
 import kotlin.math.max
+import com.blogspot.atifsoftwares.animatoolib.Animatoo
+import com.bumptech.glide.Glide
+import com.example.videoplayer.VideoListActivity.VideoItem
+
 import kotlin.math.min
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
-    // Player and UI components
     private lateinit var player: ExoPlayer
     private lateinit var trackSelector: DefaultTrackSelector
     private lateinit var playerView: PlayerView
@@ -57,7 +70,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var brightnessSeekBar: VerticalSeekBar
     private lateinit var seekBarVolume: VerticalSeekBar
     private lateinit var lockButton: LinearLayout
-    private lateinit var playPauseButton: ImageButton
     private lateinit var rewindButton: ImageButton
     private lateinit var forwardButton: ImageButton
     private lateinit var speedButton: LinearLayout
@@ -73,7 +85,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var subtitleTextView: TextView
     private lateinit var videoTitleTextView: TextView
     private lateinit var brightnessOverlay: View
-    private lateinit var playImageView: ImageView
+    private lateinit var playPauseButton: ImageView
     private lateinit var audioManager: AudioManager
     private lateinit var tvVolumeValue: TextView
     private lateinit var aspectRatioButton: LinearLayout
@@ -87,13 +99,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var continueTextView: TextView
     private lateinit var sharedPreferences: SharedPreferences
     private lateinit var unlockIcon: ImageView
+    private lateinit var playImageView: ImageView
     private var currentVideoUri: Uri? = null
-    private var showRemainingTime = false // Track whether to show remaining time
-    // New UI components for brightness/volume controls
+    private var showRemainingTime = false
     private lateinit var brightnessContainer: RelativeLayout
     private lateinit var volumeContainer: RelativeLayout
+    private lateinit var speedTextContainer: RelativeLayout
+    private lateinit var skipDirectionContainer: RelativeLayout
     private lateinit var brightnessText: TextView
     private lateinit var volumeText: TextView
+    private lateinit var infoIcon: ImageView
     private lateinit var scaleGestureDetector: ScaleGestureDetector
     private var scaleFactor = 1.0f
     private val minScale = 0.25f
@@ -101,19 +116,20 @@ class MainActivity : AppCompatActivity() {
     private var isZooming = false
     private var focusX = 0f
     private var focusY = 0f
+    private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var isLoudnessEnhancerEnabled = true
+    private var loudnessGain = 500
+    private var audioSessionId = 0
     private lateinit var orientationLockButton: LinearLayout
     private lateinit var orientationLockIcon: ImageView
     private var isOrientationLocked = false
-    // Gesture detectors
-    private var audioSessionId = C.AUDIO_SESSION_ID_UNSET
+    private var hasSoughtToSavedPosition = false
     private lateinit var gestureDetector: GestureDetectorCompat
-    private var loudnessEnhancer: LoudnessEnhancer? = null
     private lateinit var zoomcontainer: RelativeLayout
     private lateinit var zoomtext: TextView
     private lateinit var back: ImageView
-
+    private var currentTmdbData: TmdbMovie? = null // Store TMDB data for the current video
     private var currentSubtitleUri: Uri? = null
-    // State variables
     private var isFullScreen = false
     private var isSpeedIncreased = false
     private var areControlsVisible = false
@@ -123,9 +139,9 @@ class MainActivity : AppCompatActivity() {
     private val hideControlsDelay = 3000L
     private lateinit var skipDirectionTextView: TextView
     private val hideSkipDirectionRunnable = Runnable { skipDirectionTextView.visibility = View.GONE }
-    private val hideZoomTextRunnable = Runnable { zoomcontainer.visibility = View.GONE }
-
-    // Subtitle related
+    private val hideZoomTextRunnable = Runnable {
+        zoomtext.animate().alpha(0f).setDuration(200).withEndAction { zoomtext.visibility = View.GONE }.start()
+    }
     private var subtitles: List<SubtitleEntry> = emptyList()
     private var isUsingEmbeddedSubtitles = false
     private var currentSubtitleColor = SUBTITLE_COLOR_DEFAULT
@@ -133,24 +149,17 @@ class MainActivity : AppCompatActivity() {
     private var currentSubtitleBackground = Color.TRANSPARENT
     private var currentSubtitleShadow = true
     private val minSwipeDistance = 20f
+    private var currentSubtitleStrokeColor = Color.BLACK
+    private var currentSubtitleStrokeWidth = 10f
+    private var currentSubtitleShadowIntensity = 1.0f
 
-    // Audio effect for volume boost
-    private var bassBoost: BassBoost? = null
-
-    // Request codes
     private val PICK_VIDEO_REQUEST = 1
     private val PICK_SUBTITLE_REQUEST = 2
     private val subtitleUris = mutableMapOf<Uri, Uri?>()
-    // URIs
     private var videoUri: Uri? = null
-    private var subtitleUri: Uri? = null
 
     companion object {
         private const val SUBTITLE_COLOR_DEFAULT = Color.YELLOW
-        private const val SUBTITLE_COLOR_WHITE = Color.WHITE
-        private const val SUBTITLE_COLOR_RED = Color.RED
-        private const val SUBTITLE_COLOR_GREEN = Color.GREEN
-        private const val SUBTITLE_COLOR_BLUE = Color.BLUE
         private const val SUBTITLE_SIZE_DEFAULT = 22f
         private const val SUBTITLE_SIZE_LARGE = 30f
         private const val SUBTITLE_SIZE_SMALL = 19f
@@ -161,6 +170,8 @@ class MainActivity : AppCompatActivity() {
         currentSubtitleSize = sharedPreferences.getFloat("subtitle_size", SUBTITLE_SIZE_DEFAULT)
         currentSubtitleBackground = sharedPreferences.getInt("subtitle_background", Color.TRANSPARENT)
         currentSubtitleShadow = sharedPreferences.getBoolean("subtitle_shadow", true)
+        currentSubtitleStrokeColor = sharedPreferences.getInt("subtitle_stroke_color", Color.BLACK)
+        currentSubtitleStrokeWidth = sharedPreferences.getFloat("subtitle_stroke_width", 10f)
         currentSubtitleShadowIntensity = sharedPreferences.getInt("subtitle_shadow_intensity", 100) / 100f
         updateSubtitleAppearance()
     }
@@ -171,31 +182,36 @@ class MainActivity : AppCompatActivity() {
             putFloat("subtitle_size", currentSubtitleSize)
             putInt("subtitle_background", currentSubtitleBackground)
             putBoolean("subtitle_shadow", currentSubtitleShadow)
+            putInt("subtitle_stroke_color", currentSubtitleStrokeColor)
+            putFloat("subtitle_stroke_width", currentSubtitleStrokeWidth)
             putInt("subtitle_shadow_intensity", (currentSubtitleShadowIntensity * 100).toInt())
             apply()
         }
     }
 
-    // Handlers and Runnables
     private val handler = Handler(Looper.getMainLooper())
     private val updateSeekBarRunnable = object : Runnable {
         override fun run() {
-            if (::player.isInitialized && player.isPlaying) {
-                val currentPosition = player.currentPosition
-                val duration = player.duration
-                if (duration > 0) {
-                    val progress = (currentPosition * 100 / duration).toInt()
-                    videoSeekBar.progress = progress
-                    updateTimeDisplays()
-                    if (!isUsingEmbeddedSubtitles) {
-                        updateSubtitles(currentPosition)
+            if (::player.isInitialized) {
+                Log.d("SeekBar", "Player state: isPlaying=${player.isPlaying}, playbackState=${player.playbackState}")
+                if (player.isPlaying) {
+                    val currentPosition = player.currentPosition
+                    val duration = player.duration
+                    if (duration > 0) {
+                        val progress = (currentPosition * 100 / duration).toInt()
+                        videoSeekBar.progress = progress
+                        updateTimeDisplays()
+                        if (!isUsingEmbeddedSubtitles) {
+                            updateSubtitles(currentPosition)
+                        }
                     }
+                    handler.postDelayed(this, 100)
                 }
-                handler.postDelayed(this, 100)
+            } else {
+                Log.w("SeekBar", "Player not initialized")
             }
         }
     }
-
     private val hideControlsRunnable = Runnable { hideControls() }
     private val hideBrightnessOverlayRunnable = Runnable {
         brightnessOverlay.visibility = View.GONE
@@ -220,15 +236,16 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.d("MainActivity", "onCreate called: savedInstanceState=$savedInstanceState, intent=${intent.extras?.keySet()}")
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             window.attributes.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
-        // Set initial orientation to landscape
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
 
+        // Request runtime permissions
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO) != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_MEDIA_VIDEO), 100)
@@ -253,14 +270,12 @@ class MainActivity : AppCompatActivity() {
                     null
                 }
             }
-
         subtitleUris.putAll(savedSubtitleUris)
+
         initViews()
         loadSubtitleSettings()
+        initPlayer()
 
-        initPlayer() // Initialize player first
-
-        // Load persisted speed and aspect ratio after player is initialized
         val savedSpeed = sharedPreferences.getFloat("playback_speed", 1.0f)
         player.playbackParameters = PlaybackParameters(savedSpeed)
         currentScaleMode = VideoScaleMode.values()[sharedPreferences.getInt("aspect_ratio_mode", VideoScaleMode.FIT.ordinal)]
@@ -273,27 +288,41 @@ class MainActivity : AppCompatActivity() {
         playerView.setBackgroundColor(Color.BLACK)
 
         val videoUriFromIntent = intent.getStringExtra("VIDEO_URI")?.let { Uri.parse(it) }
+        val seriesId = intent.getIntExtra("SERIES_ID", -1)
+        val seasonNumber = intent.getIntExtra("SEASON_NUMBER", 1)
+        val episodeNumber = intent.getIntExtra("EPISODE_NUMBER", 1)
+        Log.d("MainActivity", "Received Intent: seriesId=$seriesId, season=$seasonNumber, episode=$episodeNumber")
+
+        // Handle video playback and title update
         if (videoUriFromIntent != null) {
             videoUri = videoUriFromIntent
-            try {
-                contentResolver.takePersistableUriPermission(videoUri!!, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (e: SecurityException) {
-                Log.w("MainActivity", "Video permission not persistable: ${e.message}")
+            currentVideoUri = videoUri
+            playVideoAndUpdateTitle(videoUri!!, seriesId, seasonNumber, episodeNumber)
+        } else if (savedInstanceState != null && savedInstanceState.getParcelable<Uri>("videoUri") != null) {
+            videoUri = savedInstanceState.getParcelable("videoUri")
+            currentVideoUri = videoUri
+            if (videoUri != null) {
+                Log.d("MainActivity", "Restoring from saved state: videoUri=$videoUri")
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO) != PackageManager.PERMISSION_GRANTED &&
+                    ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                    Toast.makeText(this, "Permission required to play video", Toast.LENGTH_LONG).show()
+                    finish()
+                    return
+                }
+                playVideoAndUpdateTitle(videoUri!!, seriesId, seasonNumber, episodeNumber)
             }
-            playVideo(videoUri!!)
-        } else if (savedInstanceState == null) {
+        } else {
+            Log.d("MainActivity", "No video URI, launching video list")
             launchVideoList()
         }
 
-        // Load saved subtitle URI for the current video if available
         videoUri?.let { currentVideoUri ->
             val savedSubtitleUriString = sharedPreferences.getString("subtitleUri_$currentVideoUri", null)
             if (savedSubtitleUriString != null) {
                 try {
                     currentSubtitleUri = Uri.parse(savedSubtitleUriString)
-                    contentResolver.takePersistableUriPermission(currentSubtitleUri!!,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    subtitleUris[currentVideoUri] = currentSubtitleUri
+                    playVideoAndUpdateTitle(currentVideoUri, seriesId, seasonNumber, episodeNumber) // Ensure video reloads with subtitle
+                    loadSubtitles(currentSubtitleUri!!)
                     Log.d("MainActivity", "Loaded saved subtitle URI: $currentSubtitleUri")
                 } catch (e: Exception) {
                     Log.e("MainActivity", "Failed to load saved subtitle URI", e)
@@ -311,22 +340,48 @@ class MainActivity : AppCompatActivity() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
-            window.statusBarColor = ContextCompat.getColor(this, android.R.color.black)
+            window.statusBarColor = ContextCompat.getColor(this, android.R.color.transparent)
         }
+    }
+    private fun convertEac3ToAac(inputUri: Uri, onSuccess: (Uri) -> Unit) {
+        val inputPath = FileUtils.getPath(this, inputUri)
+        val outputFile = File(cacheDir, "converted_${System.currentTimeMillis()}.mp4")
+        val command = "-i \"$inputPath\" -c:v copy -c:a aac -b:a 192k -strict experimental \"${outputFile.absolutePath}\""
+
+        FFmpegKit.executeAsync(command) { session ->
+            if (ReturnCode.isSuccess(session.returnCode)) {
+                Log.d("FFmpeg", "Conversion successful: ${outputFile.absolutePath}")
+                runOnUiThread {
+                    onSuccess(Uri.fromFile(outputFile))
+                }
+            } else {
+                Log.e("FFmpeg", "FFmpeg failed: ${session.failStackTrace}")
+                runOnUiThread {
+                    Toast.makeText(this, "Failed to convert audio format", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // New helper function to encapsulate playback and title update
+    private fun playVideoAndUpdateTitle(uri: Uri, seriesId: Int, seasonNumber: Int, episodeNumber: Int) {
+        playVideo(uri)
+        updateVideoTitle(uri, seriesId, seasonNumber, episodeNumber)
     }
     private fun initViews() {
         playerView = findViewById(R.id.playerView)
         videoSeekBar = findViewById(R.id.videoSeekBar)
-        playImageView = findViewById(R.id.playImageView)
+        playPauseButton = findViewById(R.id.playPauseButton)
         lockButton = findViewById(R.id.lockButton)
         lockIcon = lockButton.findViewById(R.id.lock_ic)
-        playPauseButton = findViewById(R.id.playPauseButton)
         rewindButton = findViewById(R.id.rewindButton)
         forwardButton = findViewById(R.id.forwardButton)
         speedButton = findViewById(R.id.speedButton)
         audioSubtitleButton = findViewById(R.id.audioSubtitleButton)
-        back=findViewById(R.id.back)
+        back = findViewById(R.id.back)
         setupBackButton()
+        speedTextContainer = findViewById(R.id.speedTextContainer)
+        skipDirectionContainer = findViewById(R.id.skipDirectionContainer)
         unlockIcon = findViewById(R.id.unlockIcon)
         rightTimeTextView = findViewById(R.id.righttime)
         setupUnlockIcon()
@@ -354,6 +409,7 @@ class MainActivity : AppCompatActivity() {
         zoomcontainer = findViewById(R.id.zoomContainer)
         zoomtext = findViewById(R.id.zoomText)
         continueTextView = findViewById(R.id.continueTextView)
+        playImageView = findViewById(R.id.playImageView)
         speedText = findViewById(R.id.speedText)
         lockText = findViewById(R.id.lockText)
         audioSubtitleText = findViewById(R.id.audioSubtitleText)
@@ -363,7 +419,8 @@ class MainActivity : AppCompatActivity() {
         orientationLockButton = findViewById(R.id.orientationLockButton)
         orientationLockIcon = orientationLockButton.findViewById(R.id.orientationLockIcon)
         orientationLockButton.setOnClickListener { toggleOrientationLock() }
-        // Initial visibility setup
+         infoIcon = findViewById(R.id.infoIcon)
+        playPauseButton.setOnClickListener { togglePlayPause() }
         bottomControls.visibility = View.GONE
         controlsLayout.visibility = View.GONE
         centerControls.visibility = View.GONE
@@ -371,41 +428,45 @@ class MainActivity : AppCompatActivity() {
         videoSeekBar.visibility = View.GONE
         subtitleTextView.visibility = View.GONE
         videoTitleTextView.visibility = View.GONE
-        playImageView.visibility = View.GONE
         brightnessContainer.visibility = View.GONE
         volumeContainer.visibility = View.GONE
         brightnessOverlay.visibility = View.GONE
         tvVolumeValue.visibility = View.GONE
         continueTextView.visibility = View.GONE
-        zoomcontainer.visibility = View.GONE
+        zoomcontainer.visibility = View.VISIBLE
         skipDirectionTextView.visibility = View.GONE
+        zoomtext.visibility = View.GONE
         speedText.visibility = View.GONE
         lockButton.visibility = View.GONE
         lockText.visibility = View.GONE
-        back.visibility=View.GONE
         audioSubtitleText.visibility = View.GONE
         aspectRatioText.visibility = View.GONE
-        lockText.visibility = View.GONE
-        // Initialize seek bars
+        back.visibility = View.GONE
+
         brightnessSeekBar.maxValue = 100
         seekBarVolume.maxValue = 200
         val initialSystemVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
         val maxSystemVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-        val initialProgress = (initialSystemVolume.toFloat() / maxSystemVolume * 100).toInt()
-        brightnessSeekBar.progress = 50
+        val initialProgress = if (maxSystemVolume > 0) {
+            (initialSystemVolume.toFloat() / maxSystemVolume * 100).toInt()
+        } else 0
+
         seekBarVolume.progress = initialProgress
+        brightnessSeekBar.progress = 50
         brightnessText.text = "50%"
         volumeText.text = "$initialProgress%"
         tvVolumeValue.text = "$initialProgress%"
+        scaleFactor = sharedPreferences.getFloat("zoom_scale_factor", 1.0f)
+        playerView.scaleX = scaleFactor
+        playerView.scaleY = scaleFactor
 
-        // Subtitle TextView setup
         subtitleTextView.apply {
             setTextColor(currentSubtitleColor)
             textSize = currentSubtitleSize
             maxLines = 3
             setBackgroundColor(currentSubtitleBackground)
             if (currentSubtitleShadow) {
-                setShadowLayer(4f, 2f, 2f, Color.BLACK)
+                setShadowLayer(2f, 1f, 1f, Color.BLACK)
             }
             layoutParams = RelativeLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -418,21 +479,160 @@ class MainActivity : AppCompatActivity() {
             bringToFront()
             setOnTouchListener(SubTitleDragListener())
         }
-
         playerView.visibility = View.VISIBLE
+        infoIcon.setOnClickListener {
+            currentVideoUri?.let { uri ->
+                val title = getVideoTitleFromUri(uri)
+                val videoItem = VideoItem(
+                    uri = uri,
+                    title = title,
+                    id = uri.hashCode().toLong(),
+                    duration = player.duration.takeIf { it > 0 } ?: 0L,
+                    dateAdded = System.currentTimeMillis(),
+                    path = uri.path ?: "",
+                    isFavorite = false,
+                    isHeader = false,
+                    isSeriesHeader = false,
+                    groupCount = 0,
+                    tmdbData = currentTmdbData
+                )
+                Log.d("TMDb", "Info button clicked: title='$title', tmdbData=${currentTmdbData?.displayTitle}")
+                showTmdbData(videoItem)
+            } ?: run {
+                Toast.makeText(this, "No video loaded", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    private fun showTmdbData(video: VideoItem) {
+        if (video.isHeader || video.isSeriesHeader) {
+            Toast.makeText(this, "Metadata not available for headers", Toast.LENGTH_SHORT).show()
+            return
+        }
+        CoroutineScope(Dispatchers.Main).launch {
+            try {
+                val tmdbData = video.tmdbData ?: run {
+                    val (cleanedName, isTvShow, seasonEpisode) = cleanTitleForTmdb(video.title)
+                    TmdbClient.getMediaData(cleanedName, isTvShow)?.also {
+                        if (isTvShow && seasonEpisode != null) {
+                            val episodeData = TmdbClient.getEpisodeData(it.seriesId ?: return@also, seasonEpisode.first, seasonEpisode.second)
+                            if (episodeData != null) {
+                                it.season = episodeData.season_number
+                                it.episode = episodeData.episode_number
+                                it.displayTitle = episodeData.name ?: it.displayTitle
+                            }
+                        }
+                    }
+                }
+
+                val dialogView = LayoutInflater.from(this@MainActivity).inflate(R.layout.dialog_tmdb_data, null)
+                val dialog = AlertDialog.Builder(this@MainActivity, R.style.CustomAlertDialog)
+                    .setTitle("Metadata")
+                    .setView(dialogView)
+                    .setPositiveButton("OK") { dialog, _ -> dialog.dismiss() }
+                    .create()
+
+                if (tmdbData != null) {
+                    dialogView.findViewById<TextView>(R.id.tmdb_title).text = tmdbData.displayTitle
+                    dialogView.findViewById<TextView>(R.id.tmdb_type).text =
+                        if (tmdbData.media_type == "tv") "TV Show" else "Movie"
+
+                    if (tmdbData.season != null && tmdbData.episode != null) {
+                        dialogView.findViewById<TextView>(R.id.tmdb_season_episode).apply {
+                            text = "Season ${tmdbData.season}, Episode ${tmdbData.episode}"
+                            visibility = View.VISIBLE
+                        }
+                    } else {
+                        dialogView.findViewById<TextView>(R.id.tmdb_season_episode).visibility = View.GONE
+                    }
+
+                    dialogView.findViewById<TextView>(R.id.tmdb_release_date).text =
+                        "Release Date: ${tmdbData.displayDate ?: "Not available"}"
+
+                    dialogView.findViewById<TextView>(R.id.tmdb_rating).text =
+                        tmdbData.vote_average?.let { "${String.format("%.1f", it)}/10" } ?: "Not rated"
+
+                    dialogView.findViewById<TextView>(R.id.tmdb_overview).text =
+                        tmdbData.overview?.takeIf { it.isNotBlank() } ?: "No description available"
+
+                    val posterImageView = dialogView.findViewById<ImageView>(R.id.tmdb_poster)
+                    if (tmdbData.poster_path?.isNotEmpty() == true) {
+                        val imageUrl = "${TmdbClient.IMAGE_BASE_URL}${tmdbData.poster_path}"
+                        Log.d("TMDb", "Loading dialog poster for '${tmdbData.displayTitle}': $imageUrl")
+                        Glide.with(this@MainActivity)
+                            .load(imageUrl)
+                            .placeholder(R.drawable.placeholder)
+                            .error(R.drawable.placeholder)
+                            .dontAnimate()
+                            .into(posterImageView)
+                    } else {
+                        Log.d("TMDb", "No poster for '${tmdbData.displayTitle}', using placeholder")
+                        Glide.with(this@MainActivity)
+                            .load(R.drawable.placeholder)
+                            .dontAnimate()
+                            .into(posterImageView)
+                    }
+                } else {
+                    dialogView.findViewById<TextView>(R.id.tmdb_title).text = video.title
+                    dialogView.findViewById<TextView>(R.id.tmdb_type).text = "Unknown"
+                    dialogView.findViewById<TextView>(R.id.tmdb_season_episode).visibility = View.GONE
+                    dialogView.findViewById<TextView>(R.id.tmdb_release_date).text = "Release Date: Not available"
+                    dialogView.findViewById<TextView>(R.id.tmdb_rating).text = "Not rated"
+                    dialogView.findViewById<TextView>(R.id.tmdb_overview).text = "No metadata available for this video."
+                    dialogView.findViewById<ImageView>(R.id.tmdb_poster).setImageResource(R.drawable.placeholder)
+                }
+
+                dialog.setOnShowListener {
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(Color.WHITE)
+                }
+                dialog.show()
+            } catch (e: Exception) {
+                Log.e("TMDb", "Error showing TMDB data: ${e.message}", e)
+                Toast.makeText(this@MainActivity, "Error retrieving metadata", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
     private fun updateOrientationLockIcon() {
-        // Assuming you have an ImageView for the orientation lock icon
         orientationLockIcon.setImageResource(
             if (isOrientationLocked) android.R.drawable.ic_lock_lock
             else android.R.drawable.ic_lock_idle_lock
         )
     }
-
+    private fun showEpisodeInfoDialog(seriesId: Int, seasonNumber: Int = 1, episodeNumber: Int = 1) {
+        Log.d("Dialog", "showEpisodeInfoDialog called with seriesId=$seriesId, season=$seasonNumber, episode=$episodeNumber")
+        CoroutineScope(Dispatchers.IO).launch {
+            val episode = if (seriesId != -1 && seasonNumber > 0 && episodeNumber > 0) {
+                try {
+                    TmdbClient.getEpisodeData(seriesId, seasonNumber, episodeNumber)
+                } catch (e: Exception) {
+                    Log.e("Tmdb", "Failed to fetch episode data: ${e.message}")
+                    null
+                }
+            } else {
+                null
+            }
+            withContext(Dispatchers.Main) {
+                val builder = AlertDialog.Builder(this@MainActivity, R.style.CustomAlertDialog)
+                builder.setTitle("Episode Info")
+                builder.setMessage(
+                    episode?.let {
+                        "Title: ${it.name ?: "Unknown"}\n" +
+                                "Overview: ${it.overview ?: "No overview available"}\n" +
+                                "Air Date: ${it.air_date ?: "N/A"}\n" +
+                                "Rating: ${it.vote_average ?: "N/A"}"
+                    } ?: "Failed to load episode information or invalid input."
+                )
+                builder.setPositiveButton("OK") { dialog, _ -> dialog.dismiss() }
+                val dialog = builder.create()
+                dialog.setOnShowListener {
+                    dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(Color.WHITE)
+                }
+                dialog.show()
+            }
+        }
+    }
     private fun toggleOrientationLock() {
         isOrientationLocked = !isOrientationLocked
         if (isOrientationLocked) {
-            // Lock to current orientation
             val currentOrientation = resources.configuration.orientation
             requestedOrientation = when (currentOrientation) {
                 Configuration.ORIENTATION_LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -440,7 +640,6 @@ class MainActivity : AppCompatActivity() {
             }
             Toast.makeText(this, "Orientation locked", Toast.LENGTH_SHORT).show()
         } else {
-            // Unlock orientation
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
             Toast.makeText(this, "Orientation unlocked", Toast.LENGTH_SHORT).show()
         }
@@ -481,6 +680,113 @@ class MainActivity : AppCompatActivity() {
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(Color.WHITE)
         }
         dialog.show()
+    }
+
+    private fun togglePlayPause() {
+        if (player.isPlaying) {
+            player.pause()
+            playPauseButton.setImageResource(R.drawable.pause)
+            playImageView.visibility = View.GONE
+        } else {
+            player.play()
+            playPauseButton.setImageResource(R.drawable.play)
+            playImageView.visibility = View.GONE
+            updateVolume(seekBarVolume.progress)
+        }
+        handler.post(updateSeekBarRunnable)
+        updateSubtitles(player.currentPosition)
+        resetHideControlsTimer()
+    }
+    private fun cleanTitleForTmdb(title: String): Triple<String, Boolean, Pair<Int, Int>?> {
+        // Remove file extension
+        var cleaned = title.substringBeforeLast(".").trim()
+
+        // Remove common video metadata patterns
+        cleaned = cleaned.replace(Regex("(?i)(S\\d{1,2}E\\d{1,2}|\\d{3,4}p|BluRay|WEBRip|HDRip|x264|x265|h264|h265|AAC|DDP|DD5\\.1|TrueHD|Atmos|HEVC|AVC|10bit|8bit|1080i|2160p|480p|720p|4K|UHD|SD|HD|Rip|REPACK|PROPER|EXTENDED|UNRATED|REMASTERED|DIRECTORS\\.CUT|DC|\\d+MB|AMZN|NF|DSNP|HMAX|HBO|BBC|ITV|DISNEY|CRITERION|IMAX|MULTI|LiNE|AAC5\\.1|AC3|MP4|MKV|Hi10P|DTS|DTS-HD|MA\\d\\.\\d|SUBBED|DUBBED|\\[.*?\\]|\\(.*?\\)|\\{.*?\\})"), "").trim()
+
+        // Remove release groups and other tags
+        cleaned = cleaned.replace(Regex("(?i)(HETeam|YTS|PSA|Pahe|EZTV|EVO|TiGole|GalaxyRG|ELiTE|SPARKS|GOSSIP|DRONES|ION10|MeGusta|AFG|CMRG|FLUX|LAZY|BTX|RMTeam|SSRMovies|KOGi|DiAMOND|CiNEFiLE|HiVE|SHiNiGAMi|BAE|BRRip|WEB-DL|DDP5\\.1)"), "").trim()
+
+        // Remove years (e.g., "(2023)") and extra spaces
+        cleaned = cleaned.replace(Regex("\\(\\d{4}\\)|\\b\\d{4}\\b"), "").trim()
+
+        // Replace special characters and normalize spaces
+        cleaned = cleaned.replace(Regex("[^a-zA-Z0-9\\s]"), " ").replace(Regex("\\s+"), " ").trim()
+
+        // Stop at season/episode if present to avoid including extra text
+        val seasonEpisodeMatch = Regex("(?i)S(\\d{1,2})E(\\d{1,2})").find(title)
+        if (seasonEpisodeMatch != null) {
+            val index = seasonEpisodeMatch.range.first
+            cleaned = title.substring(0, index).substringBeforeLast(".").trim()
+            // Reapply cleaning steps to the portion before SxxExx
+            cleaned = cleaned.replace(Regex("\\(\\d{4}\\)|\\b\\d{4}\\b|\\[.*?\\]|\\{.*?\\}"), "").trim()
+            cleaned = cleaned.replace(Regex("[^a-zA-Z0-9\\s]"), " ").replace(Regex("\\s+"), " ").trim()
+        }
+
+        // Detect if it's a TV show
+        val isTvShow = seasonEpisodeMatch != null
+        val seasonEpisode = seasonEpisodeMatch?.let {
+            Pair(it.groups[1]!!.value.toInt(), it.groups[2]!!.value.toInt())
+        }
+
+        // Fallback: If cleaned title is empty, use original title without extension
+        val finalCleaned = if (cleaned.isBlank()) {
+            title.substringBeforeLast(".").replace(Regex("[^a-zA-Z0-9\\s]"), " ").replace(Regex("\\s+"), " ").trim()
+        } else {
+            cleaned
+        }
+
+        Log.d("TMDb", "Cleaned title: raw='$title', cleaned='$finalCleaned', isTvShow=$isTvShow, seasonEpisode=$seasonEpisode")
+        return Triple(finalCleaned, isTvShow, seasonEpisode)
+    }
+    private fun updateVideoTitle(videoUri: Uri, seriesId: Int = -1, seasonNumber: Int = 1, episodeNumber: Int = 1) {
+        val title = getVideoTitleFromUri(videoUri)
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val (cleanedName, isTvShow, seasonEpisode) = cleanTitleForTmdb(title)
+                val tmdbData = TmdbClient.getMediaData(cleanedName, isTvShow)?.also {
+                    if (isTvShow && (seriesId != -1 || seasonEpisode != null)) {
+                        val season = if (seriesId != -1) seasonNumber else seasonEpisode?.first ?: 1
+                        val episode = if (seriesId != -1) episodeNumber else seasonEpisode?.second ?: 1
+                        val seriesIdToUse = seriesId.takeIf { it != -1 } ?: it.seriesId ?: return@also
+                        Log.d("TMDb", "Fetching episode data: seriesId=$seriesIdToUse, season=$season, episode=$episode")
+                        val episodeData = TmdbClient.getEpisodeData(seriesIdToUse, season, episode)
+                        if (episodeData != null) {
+                            it.season = episodeData.season_number
+                            it.episode = episodeData.episode_number
+                            it.displayTitle = episodeData.name ?: it.displayTitle
+                            Log.d("TMDb", "Episode data fetched: name=${episodeData.name}, season=${episodeData.season_number}, episode=${episodeData.episode_number}")
+                        } else {
+                            Log.w("TMDb", "Episode data not found for seriesId=$seriesIdToUse, season=$season, episode=$episode")
+                        }
+                    } else {
+                        Log.d("TMDb", "Not a TV show or no season/episode data: isTvShow=$isTvShow, seasonEpisode=$seasonEpisode")
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    currentTmdbData = tmdbData
+                    val displayText = when {
+                        tmdbData != null && tmdbData.media_type == "tv" && tmdbData.season != null && tmdbData.episode != null -> {
+                            val seasonStr = String.format("S%02d", tmdbData.season)
+                            val episodeStr = String.format("E%02d", tmdbData.episode)
+                            "${tmdbData.displayTitle}-$seasonStr$episodeStr"
+                        }
+                        tmdbData != null -> tmdbData.displayTitle ?: title
+                        else -> title
+                    }
+                    videoTitleTextView.text = displayText
+                    videoTitleTextView.visibility = View.VISIBLE
+                    Log.d("TMDb", "Title set to: $displayText, tmdbData=$tmdbData")
+                }
+            } catch (e: Exception) {
+                Log.e("TMDb", "Failed to update video title: ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    currentTmdbData = null
+                    videoTitleTextView.text = title
+                    videoTitleTextView.visibility = View.VISIBLE
+                }
+            }
+        }
     }
     private fun applyScaleMode(mode: VideoScaleMode) {
         currentScaleMode = mode
@@ -547,9 +853,46 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateVolume(progress: Int) {
+        try {
+            val maxSystemVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            val volumeFraction = if (progress == 0) 0f else (progress / 100f).coerceIn(0f, 2f)
+            val adjustedVolume = (volumeFraction * volumeFraction) / 1.5f
+            val playerVolume = (adjustedVolume * 1.3f).coerceIn(0f, 1f)
+            player.volume = playerVolume
+            val systemVolume = (adjustedVolume * maxSystemVolume * 1.5f).toInt().coerceIn(0, maxSystemVolume)
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, systemVolume, 0)
+
+            loudnessEnhancer?.let { enhancer ->
+                if (isLoudnessEnhancerEnabled && progress > 100) {
+                    val gain = (progress - 100) * 10
+                    enhancer.setTargetGain(gain.coerceIn(0, 1000))
+                    enhancer.enabled = true
+                    Log.d("Audio", "LoudnessEnhancer enabled: gain=$gain cB")
+                } else {
+                    enhancer.enabled = false
+                    Log.d("Audio", "LoudnessEnhancer disabled: progress=$progress")
+                }
+            }
+
+            volumeText.text = "$progress%"
+            tvVolumeValue.text = "$progress%"
+            Log.d("Audio", "Volume set: progress=$progress, playerVolume=$playerVolume, systemVolume=$systemVolume")
+        } catch (e: Exception) {
+            Log.e("Audio", "Error updating volume: ${e.message}", e)
+            val volumeFraction = (progress / 100f).coerceIn(0f, 2f)
+            val adjustedVolume = (volumeFraction * volumeFraction) / 1.5f
+            val playerVolume = (adjustedVolume * 1.3f).coerceIn(0f, 1f)
+            player.volume = playerVolume
+            loudnessEnhancer?.enabled = false
+        }
+    }
+
     private fun initPlayer() {
         val renderersFactory = DefaultRenderersFactory(this)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+            .setEnableDecoderFallback(true)
+
         trackSelector = DefaultTrackSelector(this)
         player = ExoPlayer.Builder(this)
             .setRenderersFactory(renderersFactory)
@@ -559,37 +902,68 @@ class MainActivity : AppCompatActivity() {
         playerView.player = player
         playerView.useController = false
         playerView.subtitleView?.visibility = View.GONE
+
+        try {
+            audioSessionId = player.audioSessionId
+            if (audioSessionId != AudioManager.ERROR) {
+                loudnessEnhancer = LoudnessEnhancer(audioSessionId)
+                loudnessGain = sharedPreferences.getInt("loudness_gain", 500)
+                isLoudnessEnhancerEnabled = sharedPreferences.getBoolean("loudness_enhancer_enabled", true)
+                loudnessEnhancer?.enabled = isLoudnessEnhancerEnabled
+                loudnessEnhancer?.setTargetGain(loudnessGain.coerceIn(0, 3000))
+                Log.d("Audio", "LoudnessEnhancer initialized with audioSessionId=$audioSessionId, gain=$loudnessGain")
+            } else {
+                Log.w("Audio", "Invalid audio session ID, LoudnessEnhancer not initialized")
+            }
+        } catch (e: Exception) {
+            Log.e("Audio", "Failed to initialize LoudnessEnhancer: ${e.message}", e)
+            loudnessEnhancer = null
+        }
+
+        enhanceVideoDepth()
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
                     Player.STATE_READY -> {
-                        if (player.playWhenReady) {
-                            handler.post(updateSeekBarRunnable)
-                            playImageView.visibility = View.GONE
-                            playPauseButton.setImageResource(R.drawable.play)
+                        val currentProgress = seekBarVolume.progress
+                        updateVolume(currentProgress)
+                        val savedPosition = videoUri?.let { sharedPreferences.getLong(it.toString(), 0L) } ?: 0L
+                        if (savedPosition > 0 && !hasSoughtToSavedPosition) {
+                            player.seekTo(savedPosition)
+                            player.playWhenReady = true
+                            hasSoughtToSavedPosition = true
+                            Log.d("VideoPlayback", "Player ready, sought to $savedPosition ms (initial seek)")
+                            if (!isUsingEmbeddedSubtitles) {
+                                updateSubtitles(savedPosition)
+                            }
                         } else {
-                            playImageView.visibility = View.VISIBLE
-                            playPauseButton.setImageResource(R.drawable.pause)
+                            Log.d("VideoPlayback", "Player ready, no seek needed (position=${player.currentPosition} ms)")
+                            if (!isUsingEmbeddedSubtitles) {
+                                updateSubtitles(player.currentPosition)
+                            }
+                        }
+                        handler.post(updateSeekBarRunnable)
+
+                        if (currentSubtitleUri == null && !isUsingEmbeddedSubtitles) {
+                            val textGroups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
+                            if (textGroups.isNotEmpty()) {
+                                val selectedGroup = textGroups[0]
+                                enableEmbeddedSubtitle(selectedGroup)
+                                isUsingEmbeddedSubtitles = true
+                            }
+                        } else if (currentSubtitleUri != null && !isUsingEmbeddedSubtitles) {
+                            loadSubtitles(currentSubtitleUri!!)
+                            Log.d("VideoPlayback", "Reapplied external subtitles on state ready")
                         }
 
-                        // Automatically enable the first embedded subtitle if available
-                        val textGroups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
-                        if (textGroups.isNotEmpty() && !isUsingEmbeddedSubtitles) {
-                            val selectedGroup = textGroups[0]
-                            enableEmbeddedSubtitle(selectedGroup)
-                            Toast.makeText(this@MainActivity, "Embedded subtitles enabled", Toast.LENGTH_SHORT).show()
-                        }
-
-                        // Log and configure audio tracks
                         configureAudioTrack()
                     }
                     Player.STATE_ENDED -> {
                         handler.removeCallbacks(updateSeekBarRunnable)
-                        playImageView.visibility = View.VISIBLE
-                        playPauseButton.setImageResource(R.drawable.pause)
                         videoUri?.let {
                             sharedPreferences.edit().remove(it.toString()).apply()
                         }
+                        hasSoughtToSavedPosition = false
                     }
                     Player.STATE_BUFFERING -> Log.d("Player", "State BUFFERING")
                     Player.STATE_IDLE -> Log.d("Player", "State IDLE")
@@ -599,12 +973,14 @@ class MainActivity : AppCompatActivity() {
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
                 if (playWhenReady) {
                     handler.post(updateSeekBarRunnable)
-                    playImageView.visibility = View.GONE
                     playPauseButton.setImageResource(R.drawable.play)
+                    playImageView.visibility = View.GONE
+                    updateVolume(seekBarVolume.progress)
                 } else {
                     handler.removeCallbacks(updateSeekBarRunnable)
-                    playImageView.visibility = View.VISIBLE
-                    playPauseButton.setImageResource(R.drawable.pause)
+                    if (reason != Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS) {
+                        playImageView.visibility = View.VISIBLE
+                    }
                 }
             }
 
@@ -615,47 +991,38 @@ class MainActivity : AppCompatActivity() {
 
             override fun onCues(cues: MutableList<Cue>) {
                 if (isUsingEmbeddedSubtitles) {
-                    val currentCueText = cues.joinToString("\n") { it.text?.toString() ?: "" }
-                    runOnUiThread {
-                        subtitleTextView.text = currentCueText
-                        subtitleTextView.visibility = if (currentCueText.isNotEmpty()) View.VISIBLE else View.GONE
+                    Log.d("Subtitles", "Received ${cues.size} embedded cues at position=${player.currentPosition}")
+                    if (cues.isNotEmpty()) {
+                        val cueText = cues.joinToString("\n") { it.text?.toString() ?: "" }
+                        val cleanText = cleanSubtitleText(cueText)
+                        val spannableText = SpannableString(cleanText)
+                        spannableText.setSpan(
+                            StrokeSpan(currentSubtitleStrokeColor, currentSubtitleStrokeWidth, currentSubtitleColor),
+                            0,
+                            cleanText.length,
+                            Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                        )
+                        runOnUiThread {
+                            subtitleTextView.setText(spannableText, TextView.BufferType.SPANNABLE)
+                            subtitleTextView.visibility = View.VISIBLE
+                            Log.d("Subtitles", "Embedded subtitle set: text='$cleanText', strokeColor=$currentSubtitleStrokeColor, strokeWidth=$currentSubtitleStrokeWidth")
+                        }
+                    } else {
+                        runOnUiThread {
+                            subtitleTextView.text = ""
+                            subtitleTextView.visibility = View.GONE
+                            Log.d("Subtitles", "No embedded subtitle cues, hiding TextView")
+                        }
                     }
                 }
-            }
-
-            override fun onAudioSessionIdChanged(audioSessionId: Int) {
-                try {
-                    bassBoost?.release()
-                    loudnessEnhancer?.release()
-                    bassBoost = BassBoost(0, audioSessionId).apply {
-                        enabled = true
-                        setStrength(0) // Start with minimal bass boost
-                    }
-                    loudnessEnhancer = LoudnessEnhancer(audioSessionId).apply {
-                        setTargetGain(1000) // Initial gain in millibels
-                        enabled = true
-                    }
-                } catch (e: Exception) {
-                    Log.e("BassBoost", "Failed to initialize audio effects: ${e.message}")
-                    Toast.makeText(this@MainActivity, "Volume boost unavailable", Toast.LENGTH_SHORT).show()
-                    player.volume = 1.5f
-                }
-            }
-
-            override fun onPositionDiscontinuity(
-                oldPosition: Player.PositionInfo,
-                newPosition: Player.PositionInfo,
-                reason: Int
-            ) {
-                Log.d("Player", "Position discontinuity: $reason, oldPos=${oldPosition.positionMs}, newPos=${newPosition.positionMs}")
             }
         })
 
         trackSelector.parameters = trackSelector.parameters
             .buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false) // Allow text tracks
-            .setPreferredAudioRoleFlags(C.ROLE_FLAG_MAIN) // Prefer main audio
-            .setTunnelingEnabled(false) // Disable tunneling for better audio handling
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+            .setPreferredAudioRoleFlags(C.ROLE_FLAG_MAIN)
+            .setTunnelingEnabled(false)
             .build()
     }
 
@@ -668,25 +1035,44 @@ class MainActivity : AppCompatActivity() {
                 Log.d("AudioTracks", "Track $index: Language=${format.language}, Channels=${format.channelCount}, Role=${format.roleFlags}")
             }
 
-            // Select the first audio track with downmixing enabled
-            val selectedGroup = audioGroups.firstOrNull { group ->
-                val format = group.mediaTrackGroup.getFormat(0)
-                format.channelCount > 2 // Assume 5.1 if more than stereo
-            } ?: audioGroups.first()
-
-            enableAudioTrack(selectedGroup)
-
-
+            val selectedGroup = audioGroups.first()
             val format = selectedGroup.mediaTrackGroup.getFormat(0)
-            if (format.channelCount > 2) {
-                loudnessEnhancer?.setTargetGain(2000)
-            } else {
-                loudnessEnhancer?.setTargetGain(1000)
+            Log.d("AudioTracks", "Selected track: codec=${format.codecs}, sampleRate=${format.sampleRate}, channels=${format.channelCount}")
+            enableAudioTrack(selectedGroup)
+            updateVolume(seekBarVolume.progress)
+
+            if (player.audioSessionId != audioSessionId) {
+                audioSessionId = player.audioSessionId
+                loudnessEnhancer?.release()
+                try {
+                    if (audioSessionId != AudioManager.ERROR) {
+                        loudnessEnhancer = LoudnessEnhancer(audioSessionId)
+                        loudnessEnhancer?.enabled = isLoudnessEnhancerEnabled && seekBarVolume.progress > 100
+                        loudnessEnhancer?.setTargetGain(loudnessGain.coerceIn(0, 1000))
+                        Log.d("Audio", "LoudnessEnhancer reattached with audioSessionId=$audioSessionId")
+                    } else {
+                        Log.w("Audio", "Invalid audio session ID, LoudnessEnhancer not reattached")
+                        loudnessEnhancer = null
+                    }
+                } catch (e: Exception) {
+                    Log.e("Audio", "Failed to reattach LoudnessEnhancer: ${e.message}", e)
+                    loudnessEnhancer = null
+                }
             }
         } else {
             Log.w("AudioTracks", "No audio tracks available")
         }
     }
+
+    private fun updateZoomPercentage() {
+        val zoomPercent = (scaleFactor * 100).toInt()
+        zoomtext.text = "$zoomPercent%"
+        if (isZooming && zoomtext.visibility != View.VISIBLE) {
+            zoomtext.visibility = View.VISIBLE
+            Log.w("Zoom", "Zoomtext was not visible during zoom, forced to VISIBLE")
+        }
+    }
+
     private fun initGestureDetectors() {
         gestureDetector = GestureDetectorCompat(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
@@ -696,12 +1082,28 @@ class MainActivity : AppCompatActivity() {
                 return true
             }
 
+            @SuppressLint("SuspiciousIndentation")
             override fun onLongPress(e: MotionEvent) {
                 if (isLocked || isZooming) return
                 isSpeedIncreased = true
                 player.playbackParameters = PlaybackParameters(2.0f)
                 twoxtimeTextview.text = "2x Speed"
+                speedTextContainer.visibility = View.VISIBLE
                 twoxtimeTextview.visibility = View.VISIBLE
+                twoxtimeTextview.animate()
+                    .alpha(1f)
+                    .setDuration(200)
+                    .withEndAction {
+                        twoxtimeTextview.animate()
+                            .alpha(0f)
+                            .setDuration(200)
+                            .setStartDelay(1000)
+                            .withEndAction {
+                                speedTextContainer.visibility = View.GONE
+                            }
+                            .start()
+                    }
+                    .start()
                 handler.removeCallbacks(hideSeekTimeRunnable)
                 handler.postDelayed(hideSeekTimeRunnable, hideControlsDelay)
             }
@@ -727,6 +1129,7 @@ class MainActivity : AppCompatActivity() {
                         val newPosition = max(0, min(player.duration, player.currentPosition + seekDelta))
                         if (player.playbackState == Player.STATE_READY) {
                             player.seekTo(newPosition)
+                            updateVolume(seekBarVolume.progress)
                             seekTimeTextView.text = formatTime(newPosition / 1000)
                             seekTimeTextView.visibility = View.VISIBLE
                             resetHideControlsTimer()
@@ -734,8 +1137,8 @@ class MainActivity : AppCompatActivity() {
                             Log.w("Player", "Cannot seek: Player not in READY state (state=${player.playbackState})")
                         }
                     }
+
                     e1.x < screenWidth / 2 -> {
-                        // Fade in if not already visible
                         if (brightnessContainer.visibility != View.VISIBLE) {
                             brightnessContainer.alpha = 0f
                             brightnessOverlay.alpha = 0f
@@ -762,7 +1165,6 @@ class MainActivity : AppCompatActivity() {
                         lp.screenBrightness = if (brightness == 0f) 0.01f else brightness
                         window.attributes = lp
 
-                        // Schedule fade out
                         handler.removeCallbacks(hideBrightnessOverlayRunnable)
                         handler.postDelayed({
                             brightnessContainer.animate()
@@ -784,63 +1186,23 @@ class MainActivity : AppCompatActivity() {
                         resetHideControlsTimer()
                     }
                     else -> {
-                        // Volume adjustment (apply similar fade animations if desired)
                         if (volumeContainer.visibility != View.VISIBLE) {
                             volumeContainer.alpha = 0f
                             brightnessOverlay.alpha = 0f
                             volumeContainer.visibility = View.VISIBLE
                             brightnessOverlay.visibility = View.VISIBLE
-                            volumeContainer.animate()
-                                .alpha(1f)
-                                .setDuration(200)
-                                .start()
-                            brightnessOverlay.animate()
-                                .alpha(1f)
-                                .setDuration(200)
-                                .start()
+                            volumeContainer.animate().alpha(1f).setDuration(200).start()
+                            brightnessOverlay.animate().alpha(1f).setDuration(200).start()
                         }
 
                         val normalizedDelta = -deltaY / screenHeight
-                        val progressChange = (normalizedDelta * 100 * sensitivityFactor *
-                                min(1f, abs(normalizedDelta) * 2)).toInt()
+                        val progressChange = (normalizedDelta * 100 * sensitivityFactor * min(1f, abs(normalizedDelta) * 2)).toInt()
                         val newProgress = max(0, min(200, seekBarVolume.progress + progressChange))
                         seekBarVolume.progress = newProgress
-                        volumeText.text = "$newProgress%"
-                        tvVolumeValue.text = "$newProgress%"
-
-                        val maxSystemVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                        if (newProgress <= 100) {
-                            val volumeFraction = if (newProgress == 0) 0f else Math.pow(newProgress / 100.0, 2.0).toFloat()
-                            player.volume = volumeFraction
-                            val systemVolume = (volumeFraction * maxSystemVolume).toInt()
-                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, systemVolume, 0)
-                            loudnessEnhancer?.setTargetGain(1000)
-                            loudnessEnhancer?.enabled = true
-                        } else {
-                            player.volume = 1.0f
-                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxSystemVolume, 0)
-                            loudnessEnhancer?.setTargetGain(1500)
-                            loudnessEnhancer?.enabled = true
-                        }
+                        updateVolume(newProgress)
 
                         handler.removeCallbacks(hideVolumeRunnable)
-                        handler.postDelayed({
-                            volumeContainer.animate()
-                                .alpha(0f)
-                                .setDuration(200)
-                                .withEndAction {
-                                    volumeContainer.visibility = View.GONE
-                                }
-                                .start()
-                            brightnessOverlay.animate()
-                                .alpha(0f)
-                                .setDuration(200)
-                                .withEndAction {
-                                    brightnessOverlay.visibility = View.GONE
-                                }
-                                .start()
-                        }, 1000)
-
+                        handler.postDelayed(hideVolumeRunnable, 1000)
                         resetHideControlsTimer()
                     }
                 }
@@ -868,31 +1230,6 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-
-            private fun seekRelative(amount: Long) {
-                if (::player.isInitialized && player.duration > 0) {
-                    val newPosition = max(0, min(player.duration, player.currentPosition + amount))
-                    if (player.playbackState == Player.STATE_READY) {
-                        player.seekTo(newPosition)
-                        skipDirectionTextView.text = if (amount < 0) "-10s" else "+10s"
-                        val params = skipDirectionTextView.layoutParams as RelativeLayout.LayoutParams
-                        if (amount < 0) {
-                            params.addRule(RelativeLayout.ALIGN_PARENT_LEFT)
-                            params.removeRule(RelativeLayout.ALIGN_PARENT_RIGHT)
-                        } else {
-                            params.addRule(RelativeLayout.ALIGN_PARENT_RIGHT)
-                            params.removeRule(RelativeLayout.ALIGN_PARENT_LEFT)
-                        }
-                        skipDirectionTextView.layoutParams = params
-                        skipDirectionTextView.visibility = View.VISIBLE
-
-                        handler.removeCallbacks(hideSkipDirectionRunnable)
-                        handler.postDelayed(hideSkipDirectionRunnable, 1000)
-                    } else {
-                        Log.w("Player", "Cannot seek: Player not in READY state (state=${player.playbackState})")
-                    }
-                }
-            }
         })
 
         scaleGestureDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -901,51 +1238,62 @@ class MainActivity : AppCompatActivity() {
                 isZooming = true
                 focusX = detector.focusX
                 focusY = detector.focusY
+                zoomtext.animate().cancel()
+                zoomtext.alpha = 1f
+                zoomtext.visibility = View.VISIBLE
+                zoomcontainer.visibility = View.VISIBLE
+                updateZoomPercentage()
+                Log.d("Zoom", "Zoom started, zoomtext visibility set to VISIBLE")
                 return true
             }
 
             override fun onScale(detector: ScaleGestureDetector): Boolean {
                 scaleFactor *= detector.scaleFactor
                 scaleFactor = max(minScale, min(scaleFactor, maxScale))
-
-                playerView.videoSurfaceView?.apply {
-                    scaleX = scaleFactor
-                    scaleY = scaleFactor
-                }
-
+                playerView.scaleX = scaleFactor
+                playerView.scaleY = scaleFactor
+                playerView.pivotX = focusX
+                playerView.pivotY = focusY
+                zoomtext.visibility = View.VISIBLE
                 updateZoomPercentage()
+                Log.d("Zoom", "Scaling, zoomFactor=$scaleFactor, zoomtext visibility=${zoomtext.visibility}")
                 return true
             }
 
             override fun onScaleEnd(detector: ScaleGestureDetector) {
+                zoomtext.animate()
+                    .alpha(0f)
+                    .setDuration(200)
+                    .withEndAction {
+                        zoomtext.visibility = View.GONE
+                        Log.d("Zoom", "Zoom ended, zoomtext faded out and set to GONE")
+                    }
+                    .start()
                 isZooming = false
-            }
-
-            private fun updateZoomPercentage() {
-                val zoomPercent = (scaleFactor * 100).toInt()
-                zoomtext.text = "$zoomPercent%"
-                zoomcontainer.visibility = View.VISIBLE
-                handler.removeCallbacks(hideZoomTextRunnable)
-                handler.postDelayed(hideZoomTextRunnable, 1000)
+                sharedPreferences.edit().putFloat("zoom_scale_factor", scaleFactor).apply()
             }
         })
 
         playerView.setOnTouchListener { _, event ->
             if (isLocked) return@setOnTouchListener true
-
             scaleGestureDetector.onTouchEvent(event)
-
             if (event.pointerCount == 1) {
                 gestureDetector.onTouchEvent(event)
-
                 when (event.action) {
                     MotionEvent.ACTION_UP -> {
                         seekTimeTextView.visibility = View.GONE
-
                         if (isSpeedIncreased) {
                             player.playbackParameters = PlaybackParameters(1.0f)
                             isSpeedIncreased = false
-                            twoxtimeTextview.visibility = View.GONE
+                            if (twoxtimeTextview.visibility == View.VISIBLE) {
+                                twoxtimeTextview.animate()
+                                    .alpha(0f)
+                                    .setDuration(200)
+                                    .withEndAction {
+                                        speedTextContainer.visibility = View.GONE
+                                    }
+                                    .start()
+                            }
                             handler.removeCallbacks(hideSeekTimeRunnable)
                         }
                     }
@@ -967,9 +1315,7 @@ class MainActivity : AppCompatActivity() {
                         seekTimeTextView.visibility = View.VISIBLE
                         handler.removeCallbacks(hideSeekTimeRunnable)
                         handler.postDelayed(hideSeekTimeRunnable, hideControlsDelay)
-                        if (!isUsingEmbeddedSubtitles) {
-                            updateSubtitles(seekPosition)
-                        }
+                        updateSubtitles(seekPosition)
                     } else {
                         Log.w("Player", "Cannot seek: Player not in READY state (state=${player.playbackState})")
                         val currentProgress = if (player.duration > 0) {
@@ -990,129 +1336,77 @@ class MainActivity : AppCompatActivity() {
         })
 
         brightnessSeekBar.setOnProgressChangeListener { progress ->
-            // Fade in if not already visible
             if (brightnessContainer.visibility != View.VISIBLE) {
                 brightnessContainer.alpha = 0f
                 brightnessOverlay.alpha = 0f
                 brightnessContainer.visibility = View.VISIBLE
                 brightnessOverlay.visibility = View.VISIBLE
-                brightnessContainer.animate()
-                    .alpha(1f)
-                    .setDuration(200)
-                    .start()
-                brightnessOverlay.animate()
-                    .alpha(1f)
-                    .setDuration(200)
-                    .start()
+                brightnessContainer.animate().alpha(1f).setDuration(200).start()
+                brightnessOverlay.animate().alpha(1f).setDuration(200).start()
             }
-
             brightnessText.text = "$progress%"
             val brightness = progress / 100f
             val lp = window.attributes
             lp.screenBrightness = if (brightness == 0f) 0.01f else brightness
             window.attributes = lp
-
-            // Schedule fade out
             handler.removeCallbacks(hideBrightnessOverlayRunnable)
             handler.postDelayed({
-                brightnessContainer.animate()
-                    .alpha(0f)
-                    .setDuration(200)
-                    .withEndAction {
-                        brightnessContainer.visibility = View.GONE
-                    }
-                    .start()
-                brightnessOverlay.animate()
-                    .alpha(0f)
-                    .setDuration(200)
-                    .withEndAction {
-                        brightnessOverlay.visibility = View.GONE
-                    }
-                    .start()
+                brightnessContainer.animate().alpha(0f).setDuration(200).withEndAction {
+                    brightnessContainer.visibility = View.GONE
+                }.start()
+                brightnessOverlay.animate().alpha(0f).setDuration(200).withEndAction {
+                    brightnessOverlay.visibility = View.GONE
+                }.start()
             }, 1000)
         }
 
-        player.addListener(object : Player.Listener {
-            override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_READY) {
-                    loudnessEnhancer = LoudnessEnhancer(player.audioSessionId)
-                    loudnessEnhancer?.setTargetGain(1500)
-                    loudnessEnhancer?.enabled = true
-                }
-            }
-        })
-
         seekBarVolume.setOnProgressChangeListener { progress ->
-            volumeContainer.visibility = View.VISIBLE
-            brightnessOverlay.visibility = View.VISIBLE
-            volumeText.text = "$progress%"
-            tvVolumeValue.text = "$progress%"
-
-            val maxSystemVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-            val volumeFraction = progress / 100f
-
-            if (progress <= 100) {
-                player.volume = volumeFraction * 1.2f
-                val systemVolume = (volumeFraction * maxSystemVolume).toInt()
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, systemVolume, 0)
-                loudnessEnhancer?.setTargetGain(1000)
-                loudnessEnhancer?.enabled = true
-            } else {
-                player.volume = 1.0f
-                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxSystemVolume, 0)
-                loudnessEnhancer?.setTargetGain(1500)
-                loudnessEnhancer?.enabled = true
+            if (volumeContainer.visibility != View.VISIBLE) {
+                volumeContainer.alpha = 0f
+                brightnessOverlay.alpha = 0f
+                volumeContainer.visibility = View.VISIBLE
+                brightnessOverlay.visibility = View.VISIBLE
+                volumeContainer.animate().alpha(1f).setDuration(200).start()
+                brightnessOverlay.animate().alpha(1f).setDuration(200).start()
             }
-
+            updateVolume(progress)
+            handler.removeCallbacks(hideVolumeRunnable)
             handler.postDelayed(hideVolumeRunnable, 1000)
         }
     }
+
     private fun setupBackButton() {
         back.setOnClickListener {
-            val intent = Intent(this, VideoListActivity::class.java)
-            // Optional: Add flags to clear the activity stack if you don't want to return to this activity
-            intent.flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            startActivity(intent)
-            // Optional: Finish the current activity to remove it from the back stack
+            Animatoo.animateSlideLeft(this);
             finish()
         }
     }
+
     private fun setupNewButtons() {
         lockButton.setOnClickListener {
             toggleLock()
         }
-
-        playPauseButton.setOnClickListener {
-            player.playWhenReady = !player.playWhenReady
-            resetHideControlsTimer()
-        }
-
         rewindButton.setOnClickListener {
             seekRelative(-10000L)
             resetHideControlsTimer()
         }
-
         forwardButton.setOnClickListener {
             seekRelative(10000L)
             resetHideControlsTimer()
         }
-
         speedButton.setOnClickListener {
             showSpeedDialog()
             resetHideControlsTimer()
         }
-
         audioSubtitleButton.setOnClickListener {
             showAudioSubtitleDialog()
             resetHideControlsTimer()
         }
-
         aspectRatioButton.setOnClickListener {
             showAspectRatioDialog()
             resetHideControlsTimer()
         }
     }
-
 
     private fun toggleLock() {
         isLocked = !isLocked
@@ -1123,14 +1417,12 @@ class MainActivity : AppCompatActivity() {
         if (isLocked) {
             Toast.makeText(this, "Controls locked", Toast.LENGTH_SHORT).show()
             hideControls()
-            // Fade in the unlock icon
             unlockIcon.alpha = 0f
             unlockIcon.visibility = View.VISIBLE
             unlockIcon.animate()
                 .alpha(1f)
                 .setDuration(200)
                 .start()
-            // Ensure lockButton is visible initially
             lockButton.visibility = View.VISIBLE
             lockText.visibility = View.VISIBLE
             handler.removeCallbacks(hideLockButtonRunnable)
@@ -1138,7 +1430,6 @@ class MainActivity : AppCompatActivity() {
         } else {
             Toast.makeText(this, "Controls unlocked", Toast.LENGTH_SHORT).show()
             showControls()
-            // Fade out the unlock icon
             unlockIcon.animate()
                 .alpha(0f)
                 .setDuration(200)
@@ -1152,7 +1443,6 @@ class MainActivity : AppCompatActivity() {
     private fun showSpeedDialog() {
         val builder = AlertDialog.Builder(this, R.style.CustomAlertDialog)
         builder.setTitle("Select Playback Speed")
-
         val speeds = arrayOf("0.25x", "0.5x", "0.75x", "1.0x", "1.25x", "1.40", "1.5x", "1.60", "1.75x", "2.0x")
         builder.setItems(speeds) { _, which ->
             val speed = when (which) {
@@ -1173,19 +1463,17 @@ class MainActivity : AppCompatActivity() {
             sharedPreferences.edit().putFloat("playback_speed", speed).apply()
             Toast.makeText(this, "Speed set to ${speeds[which]}", Toast.LENGTH_SHORT).show()
         }
-
         builder.setNegativeButton("Cancel") { dialog, _ -> dialog.dismiss() }
-
         val dialog = builder.create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(Color.WHITE)
         }
         dialog.show()
     }
+
     private fun showAudioSubtitleDialog() {
         val builder = AlertDialog.Builder(this, R.style.CustomAlertDialog)
         builder.setTitle("Audio & Subtitles")
-
         val options = arrayOf("Audio Tracks", "Subtitles")
         builder.setItems(options) { _, which ->
             when (which) {
@@ -1193,9 +1481,7 @@ class MainActivity : AppCompatActivity() {
                 1 -> showSubtitleDialog()
             }
         }
-
         builder.setNegativeButton("Cancel") { dialog, _ -> dialog.dismiss() }
-
         val dialog = builder.create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(Color.WHITE)
@@ -1213,8 +1499,6 @@ class MainActivity : AppCompatActivity() {
             windowInsetsController.show(WindowInsetsCompat.Type.systemBars())
         }
         this.isFullScreen = isFullScreen
-
-        // Reset zoom and subtitle size when exiting full-screen mode
         if (!isFullScreen) {
             playerView.videoSurfaceView?.apply {
                 scaleX = 1f
@@ -1225,13 +1509,15 @@ class MainActivity : AppCompatActivity() {
             subtitleTextView.textSize = baseSubtitleSize
         }
     }
+
     private fun setupUnlockIcon() {
         unlockIcon.setOnClickListener {
             if (isLocked) {
-                toggleLock() // Unlock the screen
+                toggleLock()
             }
         }
     }
+
     private fun toggleControlsVisibility() {
         if (areControlsVisible) {
             hideControls()
@@ -1239,10 +1525,12 @@ class MainActivity : AppCompatActivity() {
             showControls()
         }
     }
+
     private val hideLockButtonRunnable = Runnable {
         lockButton.visibility = View.GONE
         lockText.visibility = View.GONE
     }
+
     private fun showControls() {
         areControlsVisible = true
         bottomControls.visibility = View.VISIBLE
@@ -1255,12 +1543,13 @@ class MainActivity : AppCompatActivity() {
         lockButton.visibility = View.VISIBLE
         audioSubtitleButton.visibility = View.VISIBLE
         speedText.visibility = View.VISIBLE
+        playPauseButton.visibility = View.VISIBLE
         aspectRatioButton.visibility = View.VISIBLE
         lockText.visibility = View.VISIBLE
         back.visibility = View.VISIBLE
+        infoIcon.visibility = View.VISIBLE // Make info button visible
         audioSubtitleText.visibility = View.VISIBLE
         aspectRatioText.visibility = View.VISIBLE
-        // Fade out the unlock icon
         unlockIcon.animate()
             .alpha(0f)
             .setDuration(200)
@@ -1286,19 +1575,20 @@ class MainActivity : AppCompatActivity() {
         speedText.visibility = View.GONE
         aspectRatioButton.visibility = View.GONE
         audioSubtitleText.visibility = View.GONE
+        playPauseButton.visibility = View.GONE
+        infoIcon.visibility = View.GONE
         aspectRatioText.visibility = View.GONE
         back.visibility = View.GONE
         if (isLocked) {
             lockButton.visibility = View.VISIBLE
             lockText.visibility = View.VISIBLE
             lockIcon.visibility = View.VISIBLE
-            unlockIcon.alpha = 1f // Ensure alpha is 1 in case an animation was interrupted
-            unlockIcon.visibility = View.VISIBLE // Ensure unlock icon stays visible
+            unlockIcon.alpha = 1f
+            unlockIcon.visibility = View.VISIBLE
             handler.postDelayed(hideLockButtonRunnable, hideControlsDelay)
         } else {
             lockButton.visibility = View.GONE
             lockText.visibility = View.GONE
-            // Fade out the unlock icon
             unlockIcon.animate()
                 .alpha(0f)
                 .setDuration(200)
@@ -1313,21 +1603,14 @@ class MainActivity : AppCompatActivity() {
     private fun showSubtitleDialog() {
         val builder = AlertDialog.Builder(this, R.style.CustomAlertDialog)
         builder.setTitle("Subtitles")
-
         val options = mutableListOf<String>()
         val trackGroups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
-
-        // Add "None" option first
         options.add("None (Disable subtitles)")
-
-        // Add embedded tracks
         trackGroups.forEachIndexed { index, group ->
             val format = group.mediaTrackGroup.getFormat(0)
             val language = format.language ?: "Unknown ($index)"
-            options.add("Embedded: $language")
+            options.add("Track: $language")
         }
-
-        // Add external subtitle option if available
         currentVideoUri?.let { videoUri ->
             subtitleUris[videoUri]?.let { subtitleUri ->
                 val subtitleName = getVideoTitleFromUri(subtitleUri)
@@ -1335,10 +1618,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Always show "Load external subtitles" option
         options.add("Load external subtitles")
         options.add("Customize subtitles")
-
         builder.setItems(options.toTypedArray()) { _, which ->
             when {
                 which == 0 -> disableSubtitles()
@@ -1346,14 +1627,12 @@ class MainActivity : AppCompatActivity() {
                     val selectedGroup = trackGroups[which - 1]
                     enableEmbeddedSubtitle(selectedGroup)
                     isUsingEmbeddedSubtitles = true
-                    Toast.makeText(this, "Embedded subtitles enabled", Toast.LENGTH_SHORT).show()
                 }
                 which == trackGroups.size + 1 && currentVideoUri?.let { subtitleUris[it] != null } == true -> {
                     currentVideoUri?.let { videoUri ->
                         subtitleUris[videoUri]?.let {
                             loadSubtitles(it)
                             isUsingEmbeddedSubtitles = false
-                            Toast.makeText(this, "External subtitles enabled", Toast.LENGTH_SHORT).show()
                         }
                     }
                 }
@@ -1361,114 +1640,55 @@ class MainActivity : AppCompatActivity() {
                 which == options.size - 1 -> showSubtitleCustomizationDialog()
             }
         }
-
         builder.setNegativeButton("Cancel") { dialog, _ -> dialog.dismiss() }
-
         val dialog = builder.create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(Color.WHITE)
         }
         dialog.show()
     }
+
     private fun showSubtitleCustomizationDialog() {
         val builder = AlertDialog.Builder(this, R.style.CustomAlertDialog)
         builder.setTitle("Customize Subtitles")
-
         val options = arrayOf(
             "Change Color",
             "Change Size",
             "Toggle Background",
-            "Adjust Shadow Intensity"
+            "Change Stroke Color",
+            "Adjust Stroke Width"
         )
-
         builder.setItems(options) { _, which ->
             when (which) {
                 0 -> showColorSelectionDialog()
                 1 -> showSizeSeekBarDialog()
                 2 -> toggleSubtitleBackground()
-                3 -> showShadowIntensityDialog()
+                3 -> showStrokeColorSelectionDialog()
+                4 -> showStrokeWidthDialog()
             }
         }
-
         builder.setNegativeButton("Cancel") { dialog, _ -> dialog.dismiss() }
-
         val dialog = builder.create()
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(Color.WHITE)
         }
         dialog.show()
     }
-    private fun showShadowIntensityDialog() {
-        val dialog = Dialog(this, R.style.CustomDialog)
-        dialog.setContentView(R.layout.dialog_shadow_intensity)
-        dialog.setTitle("Adjust Shadow Intensity")
 
-        dialog.window?.setBackgroundDrawableResource(R.drawable.dialog_background)
-
-        val seekBar = dialog.findViewById<SeekBar>(R.id.shadowIntensitySeekBar) ?: return
-        val intensityPreview = dialog.findViewById<TextView>(R.id.intensityPreview) ?: return
-
-        // Load saved shadow intensity (default to 100% if not set)
-        val savedShadowIntensity = sharedPreferences.getInt("subtitle_shadow_intensity", 100)
-        seekBar.progress = savedShadowIntensity
-
-        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val intensity = progress / 100f // Convert to 0.0 to 1.0
-                intensityPreview.text = "Shadow Intensity: ${progress}%"
-                currentSubtitleShadowIntensity = intensity
-                updateSubtitleAppearance()
-            }
-
-            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
-            override fun onStopTrackingTouch(seekBar: SeekBar?) {
-                // Save the shadow intensity globally
-                sharedPreferences.edit().putInt("subtitle_shadow_intensity", seekBar?.progress ?: 100).apply()
-            }
-        })
-
-        // Initialize preview
-        intensityPreview.text = "Shadow Intensity: ${savedShadowIntensity}%"
-
-        dialog.findViewById<Button>(R.id.btnOk)?.apply {
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#FF5722"))
-            setOnClickListener {
-                sharedPreferences.edit().putInt("subtitle_shadow_intensity", seekBar.progress).apply()
-                dialog.dismiss()
-            }
-        }
-
-        dialog.findViewById<Button>(R.id.btnCancel)?.apply {
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#607D8B"))
-            setOnClickListener { dialog.dismiss() }
-        }
-
-        dialog.show()
-    }
-    private fun showColorSelectionDialog() {
+    private fun showStrokeColorSelectionDialog() {
         val dialog = Dialog(this, R.style.CustomDialog)
         dialog.setContentView(R.layout.dialog_color_picker)
-        dialog.setTitle("Select Subtitle Color")
-
+        dialog.setTitle("Select Stroke Color")
         dialog.window?.setBackgroundDrawableResource(R.drawable.dialog_background)
-
         val colorView = dialog.findViewById<View>(R.id.colorPreview)
         val hueSeekBar = dialog.findViewById<SeekBar>(R.id.hueSeekBar)
         val saturationSeekBar = dialog.findViewById<SeekBar>(R.id.saturationSeekBar)
         val valueSeekBar = dialog.findViewById<SeekBar>(R.id.valueSeekBar)
-
-        hueSeekBar.progressDrawable.setColorFilter(Color.YELLOW, PorterDuff.Mode.SRC_IN)
-        saturationSeekBar.progressDrawable.setColorFilter(Color.YELLOW, PorterDuff.Mode.SRC_IN)
-        valueSeekBar.progressDrawable.setColorFilter(Color.YELLOW, PorterDuff.Mode.SRC_IN)
-
         val hsv = FloatArray(3)
-        Color.colorToHSV(currentSubtitleColor, hsv)
+        Color.colorToHSV(currentSubtitleStrokeColor, hsv)
         hueSeekBar.progress = (hsv[0] * 100 / 360).toInt()
         saturationSeekBar.progress = (hsv[1] * 100).toInt()
         valueSeekBar.progress = (hsv[2] * 100).toInt()
-
         val updateColor = {
             hsv[0] = hueSeekBar.progress * 360f / 100
             hsv[1] = saturationSeekBar.progress / 100f
@@ -1476,7 +1696,104 @@ class MainActivity : AppCompatActivity() {
             val color = Color.HSVToColor(hsv)
             colorView.setBackgroundColor(color)
         }
+        hueSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) { updateColor() }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+        saturationSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) { updateColor() }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+        valueSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) { updateColor() }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+        dialog.findViewById<Button>(R.id.btnOk).apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#FF5722"))
+            setOnClickListener {
+                hsv[0] = hueSeekBar.progress * 360f / 100
+                hsv[1] = saturationSeekBar.progress / 100f
+                hsv[2] = valueSeekBar.progress / 100f
+                currentSubtitleStrokeColor = Color.HSVToColor(hsv)
+                updateSubtitleAppearance()
+                saveSubtitleSettings()
+                dialog.dismiss()
+            }
+        }
+        dialog.findViewById<Button>(R.id.btnCancel).apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#607D8B"))
+            setOnClickListener { dialog.dismiss() }
+        }
+        dialog.show()
+    }
 
+    private fun showStrokeWidthDialog() {
+        val dialog = Dialog(this, R.style.CustomDialog)
+        dialog.setContentView(R.layout.dialog_subtitle_size)
+        dialog.setTitle("Adjust Stroke Width")
+        dialog.window?.setBackgroundDrawableResource(R.drawable.dialog_background)
+        val seekBar = dialog.findViewById<SeekBar>(R.id.sizeSeekBar)
+        val sizePreview = dialog.findViewById<TextView>(R.id.sizePreview)
+        seekBar.max = 200
+        seekBar.progress = (currentSubtitleStrokeWidth * 10).toInt()
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val newWidth = progress / 10f
+                sizePreview.text = "Stroke Width: ${"%.1f".format(newWidth)}"
+                currentSubtitleStrokeWidth = newWidth
+                updateSubtitleAppearance()
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+        sizePreview.text = "Stroke Width: ${"%.1f".format(currentSubtitleStrokeWidth)}"
+        dialog.findViewById<Button>(R.id.btnOk).apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#FF5722"))
+            setOnClickListener {
+                currentSubtitleStrokeWidth = seekBar.progress / 10f
+                updateSubtitleAppearance()
+                saveSubtitleSettings()
+                dialog.dismiss()
+            }
+        }
+        dialog.findViewById<Button>(R.id.btnCancel).apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#607D8B"))
+            setOnClickListener { dialog.dismiss() }
+        }
+        dialog.show()
+    }
+
+    private fun showColorSelectionDialog() {
+        val dialog = Dialog(this, R.style.CustomDialog)
+        dialog.setContentView(R.layout.dialog_color_picker)
+        dialog.setTitle("Select Subtitle Color")
+        dialog.window?.setBackgroundDrawableResource(R.drawable.dialog_background)
+        val colorView = dialog.findViewById<View>(R.id.colorPreview)
+        val hueSeekBar = dialog.findViewById<SeekBar>(R.id.hueSeekBar)
+        val saturationSeekBar = dialog.findViewById<SeekBar>(R.id.saturationSeekBar)
+        val valueSeekBar = dialog.findViewById<SeekBar>(R.id.valueSeekBar)
+        hueSeekBar.progressDrawable.setColorFilter(Color.YELLOW, PorterDuff.Mode.SRC_IN)
+        saturationSeekBar.progressDrawable.setColorFilter(Color.YELLOW, PorterDuff.Mode.SRC_IN)
+        valueSeekBar.progressDrawable.setColorFilter(Color.YELLOW, PorterDuff.Mode.SRC_IN)
+        val hsv = FloatArray(3)
+        Color.colorToHSV(currentSubtitleColor, hsv)
+        hueSeekBar.progress = (hsv[0] * 100 / 360).toInt()
+        saturationSeekBar.progress = (hsv[1] * 100).toInt()
+        valueSeekBar.progress = (hsv[2] * 100).toInt()
+        val updateColor = {
+            hsv[0] = hueSeekBar.progress * 360f / 100
+            hsv[1] = saturationSeekBar.progress / 100f
+            hsv[2] = valueSeekBar.progress / 100f
+            val color = Color.HSVToColor(hsv)
+            colorView.setBackgroundColor(color)
+        }
         hueSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 updateColor()
@@ -1484,7 +1801,6 @@ class MainActivity : AppCompatActivity() {
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
-
         saturationSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 updateColor()
@@ -1492,7 +1808,6 @@ class MainActivity : AppCompatActivity() {
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
-
         valueSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 updateColor()
@@ -1500,7 +1815,6 @@ class MainActivity : AppCompatActivity() {
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
-
         dialog.findViewById<Button>(R.id.btnOk).apply {
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#FF5722"))
@@ -1513,28 +1827,21 @@ class MainActivity : AppCompatActivity() {
                 dialog.dismiss()
             }
         }
-
         dialog.findViewById<Button>(R.id.btnCancel).apply {
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#607D8B"))
             setOnClickListener { dialog.dismiss() }
         }
-
         dialog.show()
     }
-    private var currentSubtitleShadowIntensity = 1.0f // Default to full intensity
-
 
     private fun showSizeSeekBarDialog() {
         val dialog = Dialog(this, R.style.CustomDialog)
         dialog.setContentView(R.layout.dialog_subtitle_size)
         dialog.setTitle("Subtitle Size")
-
         dialog.window?.setBackgroundDrawableResource(R.drawable.dialog_background)
-
         val seekBar = dialog.findViewById<SeekBar>(R.id.sizeSeekBar)
         val sizePreview = dialog.findViewById<TextView>(R.id.sizePreview)
-
         val initialProgress = when (currentSubtitleSize) {
             SUBTITLE_SIZE_SMALL -> 0
             SUBTITLE_SIZE_DEFAULT -> 50
@@ -1542,7 +1849,6 @@ class MainActivity : AppCompatActivity() {
             else -> ((currentSubtitleSize - 10) / 30 * 100).toInt().coerceIn(0, 100)
         }
         seekBar.progress = initialProgress
-
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 val newSize = 10 + (progress / 100f * 30)
@@ -1552,7 +1858,6 @@ class MainActivity : AppCompatActivity() {
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
-
         dialog.findViewById<Button>(R.id.btnOk).apply {
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#FF5722"))
@@ -1563,14 +1868,25 @@ class MainActivity : AppCompatActivity() {
                 dialog.dismiss()
             }
         }
-
         dialog.findViewById<Button>(R.id.btnCancel).apply {
             setTextColor(Color.WHITE)
             setBackgroundColor(Color.parseColor("#607D8B"))
             setOnClickListener { dialog.dismiss() }
         }
-
         dialog.show()
+    }
+
+    private fun enhanceVideoDepth() {
+        playerView.videoSurfaceView?.let { surfaceView ->
+            val paint = Paint().apply {
+                colorFilter = ColorMatrixColorFilter(ColorMatrix().apply {
+                    setSaturation(1.5f)
+                    val contrast = 2.0f
+                    setScale(contrast, contrast, contrast, 1f)
+                })
+            }
+            surfaceView.setLayerPaint(paint)
+        }
     }
 
     private fun toggleSubtitleBackground() {
@@ -1582,41 +1898,89 @@ class MainActivity : AppCompatActivity() {
         updateSubtitleAppearance()
     }
 
-
-
     private fun updateSubtitleAppearance() {
         subtitleTextView.apply {
-            // Remove any existing shadow
-            setShadowLayer(0f, 0f, 0f, Color.TRANSPARENT)
-
-            // Create a text border (stroke) effect
-            val strokeWidth = 2f // Adjust border thickness as needed
-            val strokeColor = Color.BLACK
-
-            // Create a spannable string with stroke effect
-            val text = text?.toString() ?: ""
-            val spannable = SpannableString(text)
-            spannable.setSpan(
-                StrokeSpan(strokeColor, strokeWidth),
-                0, text.length,
-                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
-            )
-
-            setText(spannable, TextView.BufferType.SPANNABLE)
             setTextColor(currentSubtitleColor)
             textSize = currentSubtitleSize
+            maxLines = 3
             setBackgroundColor(currentSubtitleBackground)
+            if (currentSubtitleShadow) {
+                setShadowLayer(2f, 1f, 1f, Color.BLACK)
+            }
+            layoutParams = RelativeLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
+                addRule(RelativeLayout.CENTER_HORIZONTAL)
+                bottomMargin = resources.getDimensionPixelSize(R.dimen.subtitle_bottom_margin)
+            }
+            bringToFront()
+            setOnTouchListener(SubTitleDragListener())
         }
         baseSubtitleSize = currentSubtitleSize
         saveSubtitleSettings()
+        Log.d("Subtitles", "Updated appearance: color=$currentSubtitleColor, size=$currentSubtitleSize, bg=$currentSubtitleBackground, shadow=$currentSubtitleShadow")
     }
+
+    internal fun showAudioBoostDialog() {
+        val dialog = Dialog(this, R.style.CustomDialog)
+        dialog.setContentView(R.layout.dialog_audio_boost)
+        dialog.setTitle("Adjust Audio Boost")
+        dialog.window?.setBackgroundDrawableResource(R.drawable.dialog_background)
+        val seekBar = dialog.findViewById<SeekBar>(R.id.boostSeekBar)
+        val boostPreview = dialog.findViewById<TextView>(R.id.boostPreview)
+        val warningText = dialog.findViewById<TextView>(R.id.warningText)
+        seekBar.max = 4000
+        seekBar.progress = loudnessGain
+        boostPreview.text = "Boost: ${loudnessGain / 100f}dB"
+        warningText.text = "Note: High boost levels may cause distortion. Adjust carefully."
+        warningText.setTextColor(Color.YELLOW)
+        seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                loudnessGain = progress.coerceIn(0, 4000)
+                boostPreview.text = "Boost: ${loudnessGain / 100f}dB"
+                if (fromUser) {
+                    loudnessEnhancer?.setTargetGain(loudnessGain)
+                    if (isLoudnessEnhancerEnabled) {
+                        loudnessEnhancer?.enabled = loudnessGain > 0
+                    }
+                    Log.d("Audio", "Audio boost adjusted: gain=$loudnessGain cB")
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+        dialog.findViewById<Button>(R.id.btnOk).apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#FF5722"))
+            setOnClickListener {
+                loudnessGain = seekBar.progress.coerceIn(0, 4000)
+                loudnessEnhancer?.setTargetGain(loudnessGain)
+                isLoudnessEnhancerEnabled = loudnessGain > 0
+                loudnessEnhancer?.enabled = isLoudnessEnhancerEnabled
+                sharedPreferences.edit()
+                    .putInt("loudness_gain", loudnessGain)
+                    .putBoolean("loudness_enhancer_enabled", isLoudnessEnhancerEnabled)
+                    .apply()
+                updateVolume(seekBarVolume.progress)
+                Toast.makeText(this@MainActivity, "Audio boost set to ${loudnessGain / 100f}dB", Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+            }
+        }
+        dialog.findViewById<Button>(R.id.btnCancel).apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.parseColor("#607D8B"))
+            setOnClickListener { dialog.dismiss() }
+        }
+        dialog.show()
+    }
+
     private fun showAudioDialog() {
         val builder = AlertDialog.Builder(this, R.style.CustomAlertDialog)
         builder.setTitle("Audio Tracks")
-
         val options = mutableListOf<String>()
         val audioGroups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
-
         if (audioGroups.isEmpty()) {
             options.add("No audio tracks available")
         } else {
@@ -1627,25 +1991,30 @@ class MainActivity : AppCompatActivity() {
                 options.add("Track ${index + 1}: $language (${channels}ch)")
             }
         }
-
+        options.add("Adjust Audio Boost")
+        options.add("Loudness Boost: ${if (isLoudnessEnhancerEnabled) "On" else "Off"}")
         builder.setItems(options.toTypedArray()) { _, which ->
             if (audioGroups.isNotEmpty() && which < audioGroups.size) {
                 val selectedGroup = audioGroups[which]
                 enableAudioTrack(selectedGroup)
                 val format = selectedGroup.mediaTrackGroup.getFormat(0)
                 Toast.makeText(this, "Switched to ${format.language} (${format.channelCount}ch)", Toast.LENGTH_SHORT).show()
+                updateVolume(seekBarVolume.progress)
+            } else if (which == audioGroups.size) {
+                showAudioBoostDialog()
+            } else if (which == audioGroups.size + 1) {
+                isLoudnessEnhancerEnabled = !isLoudnessEnhancerEnabled
+                loudnessEnhancer?.enabled = isLoudnessEnhancerEnabled && seekBarVolume.progress > 100
+                sharedPreferences.edit().putBoolean("loudness_enhancer_enabled", isLoudnessEnhancerEnabled).apply()
+                Toast.makeText(this, "Loudness Boost ${if (isLoudnessEnhancerEnabled) "enabled" else "disabled"}", Toast.LENGTH_SHORT).show()
+                updateVolume(seekBarVolume.progress)
             }
         }
-
         builder.setNegativeButton("Cancel") { dialog, _ -> dialog.dismiss() }
-
         val dialog = builder.create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(Color.WHITE)
-        }
+        dialog.setOnShowListener { dialog.getButton(AlertDialog.BUTTON_NEGATIVE)?.setTextColor(Color.WHITE) }
         dialog.show()
     }
-
     private fun disableSubtitles() {
         subtitleTextView.visibility = View.GONE
         subtitles = emptyList()
@@ -1658,414 +2027,510 @@ class MainActivity : AppCompatActivity() {
         videoUri?.let { currentVideoUri ->
             subtitleUris.remove(currentVideoUri)
             sharedPreferences.edit().remove("subtitleUri_$currentVideoUri").apply()
+            Log.d("Subtitles", "Cleared subtitle association for video: $currentVideoUri")
         }
         currentSubtitleUri = null
-
+        Log.d("Subtitles", "Subtitles disabled")
     }
 
     private fun enableEmbeddedSubtitle(group: Tracks.Group) {
-        val parameters = trackSelector.parameters
+        trackSelector.parameters = trackSelector.parameters
             .buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-            .clearOverridesOfType(C.TRACK_TYPE_TEXT)
-            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
+            .setOverrideForType(
+                TrackSelectionOverride(group.mediaTrackGroup, 0)
+            )
             .build()
-
-        trackSelector.parameters = parameters
-        isUsingEmbeddedSubtitles = true
         subtitleTextView.visibility = View.VISIBLE
+        subtitles = emptyList()
+        currentSubtitleUri = null
+        isUsingEmbeddedSubtitles = true
+        Log.d("Subtitles", "Enabled embedded subtitle track: ${group.mediaTrackGroup.getFormat(0).language}")
     }
 
     private fun enableAudioTrack(group: Tracks.Group) {
-        val parameters = trackSelector.parameters
+        trackSelector.parameters = trackSelector.parameters
             .buildUpon()
-            .setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, 0))
+            .setOverrideForType(
+                TrackSelectionOverride(group.mediaTrackGroup, 0)
+            )
             .build()
-
-        trackSelector.parameters = parameters
+        Log.d("Audio", "Enabled audio track: ${group.mediaTrackGroup.getFormat(0).language}")
     }
-    private fun launchVideoList() {
-        val intent = Intent(this, VideoListActivity::class.java)
-        startActivityForResult(intent, PICK_VIDEO_REQUEST)
+
+    private fun loadSubtitles(subtitleUri: Uri) {
+        try {
+            // Check if the URI already has a persisted read permission
+            val hasPermission = contentResolver.getPersistedUriPermissions()
+                .any { it.uri == subtitleUri && it.isReadPermission() }
+            if (!hasPermission) {
+                contentResolver.takePersistableUriPermission(subtitleUri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                Log.d("Subtitles", "Took persistable permission for $subtitleUri")
+            }
+
+            val subtitleFormat = subtitleUri.path?.substringAfterLast(".")?.lowercase()
+            subtitles = when (subtitleFormat) {
+                "srt" -> parseSrt(subtitleUri)
+                "vtt" -> parseVtt(subtitleUri)
+                else -> {
+                    Log.w("Subtitles", "Unsupported subtitle format: $subtitleFormat")
+                    emptyList()
+                }
+            }
+            subtitleTextView.visibility = View.VISIBLE
+            isUsingEmbeddedSubtitles = false
+            trackSelector.parameters = trackSelector.parameters
+                .buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                .build()
+            currentSubtitleUri = subtitleUri
+            videoUri?.let { videoUri ->
+                subtitleUris[videoUri] = subtitleUri
+                sharedPreferences.edit().putString("subtitleUri_$videoUri", subtitleUri.toString()).apply()
+            }
+            updateSubtitles(player.currentPosition)
+            Log.d("Subtitles", "Loaded external subtitles: $subtitleUri, count=${subtitles.size}")
+        } catch (e: SecurityException) {
+            Log.e("Subtitles", "Permission error for subtitle: ${e.message}", e)
+            Toast.makeText(this, "Permission error for subtitle: ${e.message}. Please reselect the file.", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.e("Subtitles", "Failed to load subtitles: ${e.message}", e)
+            Toast.makeText(this, "Error loading subtitles: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+    private fun parseSrt(uri: Uri): List<SubtitleEntry> {
+        val subtitles = mutableListOf<SubtitleEntry>()
+        try {
+            contentResolver.openInputStream(uri)?.use { inputStream ->
+                BufferedReader(InputStreamReader(inputStream)).use { reader ->
+                    var index = 0
+                    var startTime = ""
+                    var endTime = ""
+                    val textBuilder = StringBuilder()
+                    var line: String?
+
+                    while (reader.readLine().also { line = it } != null) {
+                        line = line?.trim()
+                        if (line.isNullOrEmpty()) {
+                            if (textBuilder.isNotEmpty()) {
+                                subtitles.add(
+                                    SubtitleEntry(
+                                        index++,
+                                        parseSrtTime(startTime),
+                                        parseSrtTime(endTime),
+                                        textBuilder.toString().trim()
+                                    )
+                                )
+                                textBuilder.clear()
+                            }
+                            continue
+                        }
+
+                        when {
+                            line!!.matches(Regex("\\d+")) -> continue
+                            line!!.contains("-->") -> {
+                                val times = line!!.split("-->")
+                                startTime = times[0].trim()
+                                endTime = times[1].trim()
+                            }
+                            else -> textBuilder.append(line).append("\n")
+                        }
+                    }
+
+                    if (textBuilder.isNotEmpty()) {
+                        subtitles.add(
+                            SubtitleEntry(
+                                index,
+                                parseSrtTime(startTime),
+                                parseSrtTime(endTime),
+                                textBuilder.toString().trim()
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("Subtitles", "Error parsing SRT: ${e.message}", e)
+        }
+        return subtitles
+    }
+
+    private fun parseSrtTime(time: String): Long {
+        try {
+            val parts = time.replace(",", ".").split(":")
+            if (parts.size != 3) return 0L
+            val hours = parts[0].toLongOrNull() ?: 0L
+            val minutes = parts[1].toLongOrNull() ?: 0L
+            val seconds = parts[2].toFloatOrNull()?.toLong() ?: 0L
+            return (hours * 3600 + minutes * 60 + seconds) * 1000
+        } catch (e: Exception) {
+            Log.w("Subtitles", "Failed to parse SRT time: $time, error: ${e.message}")
+            return 0L
+        }
+    }
+
+    private fun parseVtt(uri: Uri): List<SubtitleEntry> {
+        val subtitles = mutableListOf<SubtitleEntry>()
+        try {
+            contentResolver.openInputStream(uri)?.use { inputStream ->
+                BufferedReader(InputStreamReader(inputStream)).use { reader ->
+                    var index = 0
+                    var startTime = ""
+                    var endTime = ""
+                    val textBuilder = StringBuilder()
+                    var line: String?
+                    var isHeader = true
+
+                    while (reader.readLine().also { line = it } != null) {
+                        line = line?.trim()
+                        if (isHeader) {
+                            if (line.isNullOrEmpty()) isHeader = false
+                            continue
+                        }
+                        if (line.isNullOrEmpty()) {
+                            if (textBuilder.isNotEmpty()) {
+                                subtitles.add(
+                                    SubtitleEntry(
+                                        index++,
+                                        parseVttTime(startTime),
+                                        parseVttTime(endTime),
+                                        textBuilder.toString().trim()
+                                    )
+                                )
+                                textBuilder.clear()
+                            }
+                            continue
+                        }
+
+                        when {
+                            line!!.contains("-->") -> {
+                                val times = line!!.split("-->")
+                                startTime = times[0].trim()
+                                endTime = times[1].trim()
+                            }
+                            else -> textBuilder.append(line).append("\n")
+                        }
+                    }
+
+                    if (textBuilder.isNotEmpty()) {
+                        subtitles.add(
+                            SubtitleEntry(
+                                index,
+                                parseVttTime(startTime),
+                                parseVttTime(endTime),
+                                textBuilder.toString().trim()
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("Subtitles", "Error parsing VTT: ${e.message}", e)
+        }
+        return subtitles
+    }
+
+    private fun parseVttTime(time: String): Long {
+        try {
+            val parts = time.replace(",", ".").split(":")
+            if (parts.size < 2) return 0L
+            val secondsPart = parts.last()
+            val minutes = parts[parts.size - 2].toLongOrNull() ?: 0L
+            val hours = if (parts.size > 2) parts[parts.size - 3].toLongOrNull() ?: 0L else 0L
+            val seconds = secondsPart.toFloatOrNull()?.toLong() ?: 0L
+            return (hours * 3600 + minutes * 60 + seconds) * 1000
+        } catch (e: Exception) {
+            Log.w("Subtitles", "Failed to parse VTT time: $time, error: ${e.message}")
+            return 0L
+        }
+    }
+
+    private fun updateSubtitles(currentPosition: Long) {
+        if (isUsingEmbeddedSubtitles || subtitles.isEmpty()) {
+            subtitleTextView.text = ""
+            subtitleTextView.visibility = View.GONE
+            return
+        }
+
+        val activeSubtitle = subtitles.find { subtitle ->
+            currentPosition in subtitle.startTime..subtitle.endTime
+        }
+
+        if (activeSubtitle != null) {
+            val cleanText = cleanSubtitleText(activeSubtitle.text)
+            val spannableText = SpannableString(cleanText)
+            spannableText.setSpan(
+                StrokeSpan(currentSubtitleStrokeColor, currentSubtitleStrokeWidth, currentSubtitleColor),
+                0,
+                cleanText.length,
+                Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+            )
+            subtitleTextView.setText(spannableText, TextView.BufferType.SPANNABLE)
+            subtitleTextView.visibility = View.VISIBLE
+            Log.d("Subtitles", "External subtitle set: text='${activeSubtitle.text}', position=$currentPosition")
+        } else {
+            subtitleTextView.text = ""
+            subtitleTextView.visibility = View.GONE
+            Log.d("Subtitles", "No external subtitle for position=$currentPosition")
+        }
+    }
+
+    private fun cleanSubtitleText(text: String): String {
+        return text.replace(Regex("<[^>]+>"), "")
+            .replace(Regex("\\{[^}]+\\}"), "")
+            .trim()
     }
 
     private fun pickSubtitle() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "text/*"
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("text/plain", "application/x-subrip"))
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("text/*", "application/x-subrip"))
         }
-        startActivityForResult(Intent.createChooser(intent, "Select Subtitle File (.srt)"), PICK_SUBTITLE_REQUEST)
+        startActivityForResult(intent, PICK_SUBTITLE_REQUEST)
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        when (requestCode) {
-            PICK_VIDEO_REQUEST -> {
-                if (resultCode == RESULT_OK && data != null) {
-                    videoUri = data.data
-                    if (videoUri != null) {
-                        try {
-                            contentResolver.takePersistableUriPermission(videoUri!!, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        } catch (e: SecurityException) {
-                            Log.w("MainActivity", "Video permission not persistable: ${e.message}")
-                        }
-                        playVideo(videoUri!!)
-                    } else {
-                        Toast.makeText(this, "Failed to get video URI", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    val intent = Intent(this, VideoListActivity::class.java)
-                    startActivity(intent)
-                }
-            }
-            PICK_SUBTITLE_REQUEST -> {
-                if (resultCode == RESULT_OK && data != null) {
-                    currentSubtitleUri = data.data
-                    if (currentSubtitleUri != null) {
-                        try {
-                            contentResolver.takePersistableUriPermission(currentSubtitleUri!!, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                            videoUri?.let { currentVideoUri ->
-                                subtitleUris[currentVideoUri] = currentSubtitleUri
-                                sharedPreferences.edit().putString("subtitleUri_$currentVideoUri", currentSubtitleUri.toString()).apply()
-                                Log.d("VideoPlayback", "Saved subtitle URI for $currentVideoUri: $currentSubtitleUri")
-                                loadSubtitles(currentSubtitleUri!!)
-                            }
-                        } catch (e: SecurityException) {
-                            Log.e("MainActivity", "Failed to take persistable permission for subtitle: ${e.message}")
-                            Toast.makeText(this, "Failed to access subtitle: Permission denied", Toast.LENGTH_LONG).show()
-                        }
-                    } else {
-                        Toast.makeText(this, "Failed to get subtitle URI", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    Toast.makeText(this, "Subtitle selection canceled", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
+    private fun launchVideoList() {
+        val intent = Intent(this, VideoListActivity::class.java)
+        startActivityForResult(intent, PICK_VIDEO_REQUEST)
     }
+
     private fun playVideo(uri: Uri) {
         try {
-            videoUri = uri
-            currentVideoUri = uri
-            Log.d("VideoPlayback", "Playing video: $uri")
-            Log.d("VideoPlayback", "Checking subtitle for URI: $uri, subtitleUris: $subtitleUris")
-
-            // Clear previous subtitles only if the video URI has changed
-            if (currentVideoUri != uri) {
-                subtitles = emptyList()
-                subtitleTextView.visibility = View.GONE
-                Log.d("VideoPlayback", "Cleared subtitles for new video")
-            }
-
-            currentSubtitleUri = subtitleUris[uri]
-            if (currentSubtitleUri != null) {
-                try {
-                    loadSubtitles(currentSubtitleUri!!)
-                    isUsingEmbeddedSubtitles = false
-                    Log.d("VideoPlayback", "Loaded saved subtitles for $uri")
-                } catch (e: Exception) {
-                    Log.e("VideoPlayback", "Failed to load saved subtitles", e)
-                    subtitleUris.remove(uri)
-                    currentSubtitleUri = null
-                }
-            } else {
-                // Disable subtitles if no saved ones found
-                disableSubtitles()
-            }
-            val savedPosition = sharedPreferences.getLong(uri.toString(), 0L)
-            if (savedPosition > 0) {
-                continueTextView.text = "Continue from ${formatTime(savedPosition / 1000)}?"
-                continueTextView.visibility = View.VISIBLE
-                continueTextView.setOnClickListener {
-                    player.seekTo(savedPosition)
-                    player.playWhenReady = true
-                    continueTextView.visibility = View.GONE
-                }
-                handler.postDelayed(hideContinueTextRunnable, 5000)
-            }
-
-            val dataSourceFactory = DefaultDataSource.Factory(this)
-            val mediaItem = MediaItem.Builder()
-                .setUri(uri)
-                .build()
-            val videoSource = ProgressiveMediaSource.Factory(dataSourceFactory)
-                .createMediaSource(mediaItem)
-            player.setMediaSource(videoSource)
-            player.prepare()
-            if (savedPosition <= 0) {
-                player.playWhenReady = true
-            }
-
-            // Apply global speed and aspect ratio
-            val savedSpeed = sharedPreferences.getFloat("playback_speed", 1.0f)
-            player.playbackParameters = PlaybackParameters(savedSpeed)
-            currentScaleMode = VideoScaleMode.values()[sharedPreferences.getInt("aspect_ratio_mode", VideoScaleMode.FIT.ordinal)]
-            applyScaleMode(currentScaleMode)
-
-            // Automatically load subtitles for this specific video if available
-            currentSubtitleUri = subtitleUris[uri]
-            Log.d("VideoPlayback", "Current subtitle URI for $uri: $currentSubtitleUri")
-            if (currentSubtitleUri != null) {
-                loadSubtitles(currentSubtitleUri!!)
-                Log.d("VideoPlayback", "Loaded subtitles from $currentSubtitleUri")
-            } else {
-                disableSubtitles()
-                Log.d("VideoPlayback", "No subtitle found for $uri, disabling subtitles")
-            }
-
-            player.volume = 1.0f
-            updateTimeDisplays()
-            val videoTitle = getVideoTitleFromUri(uri)
-            videoTitleTextView.text = videoTitle
-            showControls()
-            val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVolume, 0)
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error playing video: ${e.message}", e)
-            Toast.makeText(this, "Error playing video: ${e.message}", Toast.LENGTH_LONG).show()
-        }
-    }
-    private fun loadSubtitles(uri: Uri) {
-        try {
-            val inputStream = contentResolver.openInputStream(uri)
-            if (inputStream == null) {
-                Toast.makeText(this, "Failed to open subtitle file", Toast.LENGTH_SHORT).show()
-                return
-            }
-            val reader = BufferedReader(InputStreamReader(inputStream))
-            val subtitleList = mutableListOf<SubtitleEntry>()
-            var index = 0
-            var startTime = 0L
-            var endTime = 0L
-            val textBuilder = StringBuilder()
-
-            reader.useLines { lines ->
-                lines.forEach { line ->
-                    when {
-                        line.trim().toIntOrNull() != null -> {
-                            if (index > 0 && textBuilder.isNotEmpty()) {
-                                subtitleList.add(SubtitleEntry(startTime, endTime, textBuilder.toString().trim()))
-                                textBuilder.clear()
-                            }
-                            index = line.trim().toInt()
-                        }
-                        line.contains("-->") -> {
-                            val times = line.split("-->").map { it.trim() }
-                            if (times.size == 2) {
-                                startTime = parseSrtTime(times[0])
-                                endTime = parseSrtTime(times[1])
-                            }
-                        }
-                        line.isNotBlank() -> textBuilder.append(line).append("\n")
+            if (!DocumentsContract.isDocumentUri(this, uri)) {
+                // MediaStore URI - check runtime permission instead
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_VIDEO) != PackageManager.PERMISSION_GRANTED) {
+                        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_MEDIA_VIDEO), 100)
+                        return
+                    }
+                } else {
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE), 100)
+                        return
                     }
                 }
-                if (textBuilder.isNotEmpty()) {
-                    subtitleList.add(SubtitleEntry(startTime, endTime, textBuilder.toString().trim()))
+            } else {
+                // Document URI - ensure persistable permission
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            // Proceed with ExoPlayer setup
+            val videoSource = ProgressiveMediaSource.Factory(DefaultDataSource.Factory(this))
+                .createMediaSource(MediaItem.fromUri(uri))
+            player.setMediaSource(videoSource)
+            player.prepare()
+            player.playWhenReady = true
+        } catch (e: SecurityException) {
+            Toast.makeText(this, "Permission error: ${e.message}. Please reselect the file.", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Error playing video: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+    private fun updateVideoTitle(seriesId: Int, seasonNumber: Int, episodeNumber: Int) {
+        CoroutineScope(Dispatchers.IO).launch {
+            val episode = try {
+                TmdbClient.getEpisodeData(seriesId, seasonNumber, episodeNumber)
+            } catch (e: Exception) {
+                Log.e("TMDb", "Failed to get episode title: ${e.message}")
+                null
+            }
+            withContext(Dispatchers.Main) {
+                val displayText = if (episode?.name != null) {
+                    val seasonStr = String.format("S%02d", seasonNumber)
+                    val episodeStr = String.format("E%02d", episodeNumber)
+                    "${episode.name}-$seasonStr$episodeStr"
+                } else {
+                    "Episode $episodeNumber"
                 }
+                videoTitleTextView.text = displayText
+                videoTitleTextView.visibility = View.VISIBLE
             }
-            subtitles = subtitleList
-            inputStream.close()
-            isUsingEmbeddedSubtitles = false
-            subtitleTextView.visibility = View.VISIBLE
-            trackSelector.parameters = trackSelector.parameters
-                .buildUpon()
-                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                .build()
-            videoUri?.let { currentVideoUri ->
-                currentSubtitleUri = uri
-                subtitleUris[currentVideoUri] = currentSubtitleUri
-                sharedPreferences.edit()
-                    .putString("subtitleUri_$currentVideoUri", uri.toString())
-                    .apply()
-                Log.d("Subtitles", "Saved subtitle URI for video $currentVideoUri")
-            }
-            updateSubtitles(player.currentPosition)
-        } catch (e: Exception) {
-            Log.e("Subtitles", "Failed to load subtitles: ${e.message}", e)
-            Toast.makeText(this, "Failed to load subtitles: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
-    private fun parseSrtTime(timeStr: String): Long {
-        try {
-            val parts = timeStr.split(":", ",")
-            if (parts.size != 4) return 0L
-            val hours = parts[0].toLongOrNull() ?: 0L
-            val minutes = parts[1].toLongOrNull() ?: 0L
-            val seconds = parts[2].toLongOrNull() ?: 0L
-            val milliseconds = parts[3].toLongOrNull() ?: 0L
-            return (hours * 3600000) + (minutes * 60000) + (seconds * 1000) + milliseconds
-        } catch (e: Exception) {
-            return 0L
-        }
-    }
-
-    private fun updateSubtitles(position: Long) {
-        if (!isUsingEmbeddedSubtitles && subtitles.isNotEmpty()) {
-            val currentSubtitle = subtitles.find { position in it.startTime..it.endTime }
-            subtitleTextView.text = currentSubtitle?.text ?: ""
-            subtitleTextView.visibility = if (currentSubtitle != null) View.VISIBLE else View.GONE
-        }
-    }
-
     private fun getVideoTitleFromUri(uri: Uri): String {
         return try {
             contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                 if (cursor.moveToFirst()) {
-                    val displayNameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (displayNameIndex != -1) {
-                        return cursor.getString(displayNameIndex) ?: "Unknown Subtitle"
-                    }
+                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (nameIndex != -1) cursor.getString(nameIndex) else uri.lastPathSegment ?: "Unknown"
+                } else {
+                    uri.lastPathSegment ?: "Unknown"
                 }
-            }
-            uri.lastPathSegment?.substringAfterLast('/') ?: "Unknown Subtitle"
-        } catch (e: SecurityException) {
-            Log.e("MainActivity", "Permission denied accessing URI: ${e.message}")
-            "Unknown Subtitle (Permission Denied)"
+            } ?: uri.lastPathSegment ?: "Unknown"
+        } catch (e: Exception) {
+            Log.w("VideoPlayback", "Failed to get video title: ${e.message}")
+            uri.lastPathSegment ?: "Unknown"
         }
     }
-    private fun updateTimeDisplays() {
-        if (::player.isInitialized && player.duration > 0) {
-            val currentPosition = player.currentPosition
-            val duration = player.duration
-
-            // Format time based on duration
-            val currentTimeText = formatTime(currentPosition / 1000)
-            val durationTimeText = formatTime(duration / 1000)
-
-            leftTimeTextView.text = currentTimeText
-            rightTimeTextView.text = if (showRemainingTime) {
-                formatTime((duration - currentPosition) / 1000)
-            } else {
-                durationTimeText
-            }
-        }
-    }
-
-    private fun formatTime(timeInSeconds: Long): String {
-        return if (timeInSeconds * 1000 > 60 * 60 * 1000) { // Greater than 60 minutes
-            String.format("%d:%02d:%02d", timeInSeconds / 3600, (timeInSeconds % 3600) / 60, timeInSeconds % 60)
-        } else {
-            String.format("%02d:%02d", (timeInSeconds % 3600) / 60, timeInSeconds % 60)
-        }
-    }
-    private fun toggleRemainingTime() {
-        showRemainingTime = !showRemainingTime
-        updateTimeDisplays()
-    }
-    private fun seekRelative(amount: Long) {
-        val newPosition = max(0, min(player.duration, player.currentPosition + amount))
+    private fun seekRelative(millis: Long) {
+        if (player.duration <= 0) return
+        val newPosition = max(0, min(player.duration, player.currentPosition + millis))
         if (player.playbackState == Player.STATE_READY) {
             player.seekTo(newPosition)
-            skipDirectionTextView.text = if (amount < 0) "-10s" else "+10s"
-            val params = skipDirectionTextView.layoutParams as RelativeLayout.LayoutParams
-            if (amount < 0) {
-                params.addRule(RelativeLayout.ALIGN_PARENT_LEFT)
-                params.removeRule(RelativeLayout.ALIGN_PARENT_RIGHT)
-            } else {
-                params.addRule(RelativeLayout.ALIGN_PARENT_RIGHT)
-                params.removeRule(RelativeLayout.ALIGN_PARENT_LEFT)
-            }
-            skipDirectionTextView.layoutParams = params
+            updateVolume(seekBarVolume.progress)
+            updateTimeDisplays()
+            skipDirectionTextView.text = if (millis > 0) ">> 10s" else "<< 10s"
             skipDirectionTextView.visibility = View.VISIBLE
-
-            handler.removeCallbacks(hideSkipDirectionRunnable)
-            handler.postDelayed(hideSkipDirectionRunnable, 1000)
+            skipDirectionContainer.visibility = View.VISIBLE
+            skipDirectionContainer.animate()
+                .alpha(1f)
+                .setDuration(200)
+                .withEndAction {
+                    skipDirectionContainer.animate()
+                        .alpha(0f)
+                        .setDuration(500)
+                        .withEndAction {
+                            skipDirectionContainer.visibility = View.GONE
+                        }
+                        .start()
+                }
+                .start()
+            updateSubtitles(newPosition)
+            Log.d("Player", "Seek relative: millis=$millis, newPosition=$newPosition")
         } else {
             Log.w("Player", "Cannot seek: Player not in READY state (state=${player.playbackState})")
         }
     }
+    private fun updateTimeDisplays() {
+        val currentPosition = player.currentPosition / 1000
+        val duration = player.duration / 1000
+        leftTimeTextView.text = formatTime(currentPosition)
+        rightTimeTextView.text = if (showRemainingTime && duration > 0) {
+            "-${formatTime(duration - currentPosition)}"
+        } else {
+            formatTime(duration)
+        }
+    }
+
+    private fun toggleRemainingTime() {
+        showRemainingTime = !showRemainingTime
+        updateTimeDisplays()
+    }
+
+    private fun formatTime(seconds: Long): String {
+        if (seconds < 0) return "00:00"
+        val hours = seconds / 3600
+        val minutes = (seconds % 3600) / 60
+        val secs = seconds % 60
+        return if (hours > 0) {
+            String.format("%d:%02d:%02d", hours, minutes, secs)
+        } else {
+            String.format("%02d:%02d", minutes, secs)
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode == RESULT_OK && data != null) {
+            when (requestCode) {
+                PICK_VIDEO_REQUEST -> {
+                    data.data?.let { uri ->
+                        videoUri = uri
+                        currentVideoUri = uri
+                        try {
+                            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            playVideo(uri)
+                            val seriesId = data.getIntExtra("SERIES_ID", -1)
+                            val seasonNumber = data.getIntExtra("SEASON_NUMBER", 1)
+                            val episodeNumber = data.getIntExtra("EPISODE_NUMBER", 1)
+                            updateVideoTitle(uri, seriesId, seasonNumber, episodeNumber)
+                            Log.d("VideoPlayback", "Video selected: $uri, seriesId=$seriesId, season=$seasonNumber, episode=$episodeNumber")
+                        } catch (e: SecurityException) {
+                            Log.w("VideoPlayback", "Permission not persistable for video: ${e.message}")
+                            Toast.makeText(this, "Permission error: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+                PICK_SUBTITLE_REQUEST -> {
+                    data.data?.let { uri ->
+                        try {
+                            contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            loadSubtitles(uri)
+                            Log.d("Subtitles", "Subtitle selected: $uri")
+                        } catch (e: SecurityException) {
+                            Log.w("Subtitles", "Permission not persistable for subtitle: ${e.message}")
+                            Toast.makeText(this, "Permission error: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            }
+        }
+    }
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putParcelable("videoUri", videoUri)
+        Log.d("MainActivity", "Saving instance state: videoUri=$videoUri")
+    }
 
     override fun onPause() {
         super.onPause()
-        if (::player.isInitialized) {
-            videoUri?.let {
-                if (player.currentPosition > 0 && player.playbackState != Player.STATE_ENDED) {
-                    sharedPreferences.edit()
-                        .putLong(it.toString(), player.currentPosition)
-                        .apply()
-                }
-            }
-            player.playWhenReady = false
-            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (::player.isInitialized && player.isPlaying) {
+            player.pause()
+            playImageView.visibility = View.VISIBLE
         }
-        handler.removeCallbacks(hideControlsRunnable)
-        handler.removeCallbacks(hideSeekTimeRunnable)
-        handler.removeCallbacks(hideContinueTextRunnable)
+        videoUri?.let {
+            if (player.currentPosition > 0 && player.playbackState != Player.STATE_ENDED) {
+                sharedPreferences.edit().putLong(it.toString(), player.currentPosition).apply()
+                Log.d("VideoPlayback", "Paused at ${player.currentPosition} ms for $it")
+            }
+        }
+        handler.removeCallbacks(updateSeekBarRunnable)
     }
 
     override fun onResume() {
         super.onResume()
-        if (::player.isInitialized && player.playWhenReady) {
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (::player.isInitialized && !player.isPlaying && player.playbackState == Player.STATE_READY) {
+            player.play()
+            playImageView.visibility = View.GONE
+            handler.post(updateSeekBarRunnable)
+            updateVolume(seekBarVolume.progress)
+            Log.d("VideoPlayback", "Resumed playback")
         }
         setFullScreenMode(isFullScreen)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        handler.removeCallbacksAndMessages(null)
-        handler.removeCallbacks(hideSkipDirectionRunnable)
-        handler.removeCallbacks(hideContinueTextRunnable)
-        bassBoost?.release()
-        loudnessEnhancer?.release()
         if (::player.isInitialized) {
             player.release()
+            loudnessEnhancer?.release()
+            Log.d("MainActivity", "Player and LoudnessEnhancer released")
         }
+        handler.removeCallbacksAndMessages(null)
     }
 
-    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+    override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        // Handle orientation changes
-        setFullScreenMode(isFullScreen)
-        // Reapply the aspect ratio to ensure the video scales correctly
-        applyScaleMode(currentScaleMode)
-        // Update subtitle position if needed
-        subtitleTextView.post {
-            val params = subtitleTextView.layoutParams as RelativeLayout.LayoutParams
-            params.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
-            params.addRule(RelativeLayout.CENTER_HORIZONTAL)
-            subtitleTextView.layoutParams = params
-        }
-        unlockIcon.visibility = if (isLocked) View.VISIBLE else View.GONE
+        Log.d("MainActivity", "Configuration changed: orientation=${newConfig.orientation}")
+        playerView.post { applyScaleMode(currentScaleMode) }
     }
 
     inner class SubTitleDragListener : View.OnTouchListener {
-        private var initialX = 0f
         private var initialY = 0f
-        private var initialTouchX = 0f
-        private var initialTouchY = 0f
+        private var initialViewY = 0f
+        private var isDragging = false
 
         override fun onTouch(v: View, event: MotionEvent): Boolean {
             if (isLocked) return false
-
-            val rootView = findViewById<View>(android.R.id.content)
-            val screenWidth = rootView.width.toFloat()
-            val screenHeight = rootView.height.toFloat()
-
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    initialX = v.x
-                    initialY = v.y
-                    initialTouchX = event.rawX
-                    initialTouchY = event.rawY
+                    initialY = event.rawY
+                    initialViewY = subtitleTextView.y
+                    isDragging = true
                     return true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    v.measure(
-                        View.MeasureSpec.makeMeasureSpec(screenWidth.toInt(), View.MeasureSpec.AT_MOST),
-                        View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
-                    )
-                    v.x = initialX + (event.rawX - initialTouchX)
-                    v.y = initialY + (event.rawY - initialTouchY)
-                    v.x = max(0f, min(v.x, screenWidth - v.measuredWidth))
-                    v.y = max(0f, min(v.y, screenHeight - v.measuredHeight))
-                    v.y = max(screenHeight * 0.5f, min(v.y, screenHeight - v.measuredHeight))
-                    v.visibility = View.VISIBLE
-                    return true
+                    if (isDragging) {
+                        val deltaY = event.rawY - initialY
+                        val newY = initialViewY + deltaY
+                        val parentHeight = (subtitleTextView.parent as View).height
+                        val maxY = parentHeight - subtitleTextView.height.toFloat()
+                        subtitleTextView.y = newY.coerceIn(0f, maxY)
+                        return true
+                    }
                 }
                 MotionEvent.ACTION_UP -> {
+                    isDragging = false
                     return true
                 }
             }
@@ -2074,10 +2539,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     enum class VideoScaleMode {
-        FILL, FIT, ORIGINAL, STRETCH,
-        RATIO_16_9, RATIO_4_3, RATIO_18_9,
-        RATIO_19_5_9, RATIO_20_9, RATIO_21_9
+        FILL, FIT, ORIGINAL, STRETCH, RATIO_16_9, RATIO_4_3, RATIO_18_9, RATIO_19_5_9, RATIO_20_9, RATIO_21_9
     }
 
-    data class SubtitleEntry(val startTime: Long, val endTime: Long, val text: String)
+    data class SubtitleEntry(
+        val index: Int,
+        val startTime: Long,
+        val endTime: Long,
+        val text: String
+    )
+
 }

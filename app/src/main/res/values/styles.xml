@@ -3,7 +3,11 @@
 
     <!-- Vertical Progress Bar Style -->
     <!-- In res/values/styles.xml -->
-
+    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowBackground">#1C2526</item>
+    </style>
 
     <!-- Vertical Progress Bar Style for Brightness/Volume -->
     <style name="DialogButton1" parent="Widget.AppCompat.Button.Colored">

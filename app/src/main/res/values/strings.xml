@@ -1,10 +1,7 @@
 <resources>
     <string name="app_name">Video Player</string>
     <string name="audio_subtitles"><![CDATA[Audio & Subtitles]]></string>
-    <string-array name="view_modes">
-        <item>List</item>
-        <item>Grid</item>
-    </string-array>
+
     <string-array name="view_mode_options">
         <item>List View</item>
         <item>Grid View</item>

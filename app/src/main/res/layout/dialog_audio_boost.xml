@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="@drawable/dialog_background">
+
+    <TextView
+        android:id="@+id/boostPreview"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Boost: 0dB"
+        android:textColor="@android:color/white"
+        android:textSize="16sp"
+        android:gravity="center"
+        android:layout_marginBottom="16dp"/>
+
+    <SeekBar
+        android:id="@+id/boostSeekBar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:max="1500"
+        android:progress="0"
+        android:layout_marginBottom="16dp"/>
+
+    <TextView
+        android:id="@+id/warningText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Note: High boost levels may cause distortion. Adjust carefully."
+        android:textColor="@android:color/holo_red_light"
+        android:textSize="14sp"
+        android:layout_marginBottom="16dp"/>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="end">
+
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/btnCancel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Cancel"
+            android:textColor="@android:color/white"
+            android:background="@drawable/btn_color"
+            android:layout_marginEnd="8dp"/>
+
+        <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/btnOk"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="OK"
+            android:textColor="@android:color/white"
+            android:background="@drawable/btn_color"/>
+    </LinearLayout>
+</LinearLayout>

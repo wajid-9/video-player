@@ -2,7 +2,8 @@
 <resources>
     <dimen name="progress_bar_width">4dp</dimen>
     <dimen name="progress_bar_height">150dp</dimen>
-    <dimen name="subtitle_bottom_margin">60dp</dimen>
+    <dimen name="subtitle_bottom_margin">0dp</dimen>
     <dimen name="lock_button_margin_top">16dp</dimen>
     <dimen name="lock_button_margin_end">16dp</dimen>
+    <dimen name="skip_margin">16dp</dimen>
 </resources>
