@@ -1,6 +1,6 @@
 # Video Player
 
-A lightweight and modern Android video player built with **Kotlin**, **Jetpack Compose**, and **Media3 ExoPlayer**. This app provides a clean and intuitive interface for playing local and streaming videos, with support for various audio and video formats. The player is designed to be extensible, with plans to add advanced features like E-AC-3 audio support, subtitle customization, and more.
+A lightweight and modern Android video player built with **Kotlin**, **Jetpack Compose**, and **Media3 ExoPlayer**. This app provides a clean and intuitive interface for playing local and streaming videos, with support for various audio and video formats. The player is designed to be extensible, with plans to add advanced features like E-AC-3 audio support, subtitle customization, and it also uses the TMDB data to show more about the info of the videos and more..
 
 ## Features
 
