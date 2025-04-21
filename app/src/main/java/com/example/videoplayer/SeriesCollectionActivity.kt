@@ -171,6 +171,7 @@ class SeriesCollectionActivity : AppCompatActivity() {
                     })
                     Animatoo.animateSlideLeft(this) // Add slide-left animation for MainActivity start
                 }
+
             },
             updateOriginalList = { newList ->
                 videoList.clear()
@@ -312,7 +313,6 @@ class SeriesCollectionActivity : AppCompatActivity() {
             }
         }
     }
-
     @RequiresApi(Build.VERSION_CODES.R)
     private fun showDeleteConfirmation(video: VideoItem) {
         AlertDialog.Builder(this)

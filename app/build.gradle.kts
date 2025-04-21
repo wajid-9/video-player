@@ -53,7 +53,6 @@ dependencies {
     implementation(libs.zoomlayout)
     implementation(libs.androidx.swiperefreshlayout)
     implementation (libs.retrofit)
-    implementation ("com.arthenica:ffmpeg-kit-full:6.0-2")
     implementation ("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     annotationProcessor ("com.github.bumptech.glide:compiler:4.12.0")
     implementation ("com.squareup.retrofit2:converter-gson:2.11.0")

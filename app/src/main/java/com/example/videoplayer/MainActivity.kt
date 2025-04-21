@@ -46,8 +46,6 @@ import android.graphics.Paint
 import android.provider.DocumentsContract
 import android.text.Spannable
 import android.text.SpannableString
-import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.ReturnCode
 import kotlin.math.abs
 import kotlin.math.max
 import com.blogspot.atifsoftwares.animatoolib.Animatoo
@@ -59,7 +57,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
@@ -343,26 +340,6 @@ class MainActivity : AppCompatActivity() {
             window.statusBarColor = ContextCompat.getColor(this, android.R.color.transparent)
         }
     }
-    private fun convertEac3ToAac(inputUri: Uri, onSuccess: (Uri) -> Unit) {
-        val inputPath = FileUtils.getPath(this, inputUri)
-        val outputFile = File(cacheDir, "converted_${System.currentTimeMillis()}.mp4")
-        val command = "-i \"$inputPath\" -c:v copy -c:a aac -b:a 192k -strict experimental \"${outputFile.absolutePath}\""
-
-        FFmpegKit.executeAsync(command) { session ->
-            if (ReturnCode.isSuccess(session.returnCode)) {
-                Log.d("FFmpeg", "Conversion successful: ${outputFile.absolutePath}")
-                runOnUiThread {
-                    onSuccess(Uri.fromFile(outputFile))
-                }
-            } else {
-                Log.e("FFmpeg", "FFmpeg failed: ${session.failStackTrace}")
-                runOnUiThread {
-                    Toast.makeText(this, "Failed to convert audio format", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-    }
-
     // New helper function to encapsulate playback and title update
     private fun playVideoAndUpdateTitle(uri: Uri, seriesId: Int, seasonNumber: Int, episodeNumber: Int) {
         playVideo(uri)
@@ -864,15 +841,16 @@ class MainActivity : AppCompatActivity() {
             audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, systemVolume, 0)
 
             loudnessEnhancer?.let { enhancer ->
-                if (isLoudnessEnhancerEnabled && progress > 100) {
-                    val gain = (progress - 100) * 10
-                    enhancer.setTargetGain(gain.coerceIn(0, 1000))
+                if (isLoudnessEnhancerEnabled && progress > 100 && loudnessGain > 0) {
+                    enhancer.setTargetGain(loudnessGain.coerceIn(0, 1000))
                     enhancer.enabled = true
-                    Log.d("Audio", "LoudnessEnhancer enabled: gain=$gain cB")
+                    Log.d("Audio", "LoudnessEnhancer enabled: gain=$loudnessGain cB")
                 } else {
                     enhancer.enabled = false
-                    Log.d("Audio", "LoudnessEnhancer disabled: progress=$progress")
+                    Log.d("Audio", "LoudnessEnhancer disabled: progress=$progress, gain=$loudnessGain")
                 }
+            } ?: run {
+                Log.w("Audio", "LoudnessEnhancer not initialized")
             }
 
             volumeText.text = "$progress%"
@@ -887,12 +865,10 @@ class MainActivity : AppCompatActivity() {
             loudnessEnhancer?.enabled = false
         }
     }
-
     private fun initPlayer() {
         val renderersFactory = DefaultRenderersFactory(this)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
-
         trackSelector = DefaultTrackSelector(this)
         player = ExoPlayer.Builder(this)
             .setRenderersFactory(renderersFactory)
@@ -1938,14 +1914,12 @@ class MainActivity : AppCompatActivity() {
         warningText.setTextColor(Color.YELLOW)
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                loudnessGain = progress.coerceIn(0, 4000)
-                boostPreview.text = "Boost: ${loudnessGain / 100f}dB"
                 if (fromUser) {
+                    loudnessGain = progress.coerceIn(0, 4000)
+                    boostPreview.text = "Boost: ${loudnessGain / 100f}dB"
                     loudnessEnhancer?.setTargetGain(loudnessGain)
-                    if (isLoudnessEnhancerEnabled) {
-                        loudnessEnhancer?.enabled = loudnessGain > 0
-                    }
-                    Log.d("Audio", "Audio boost adjusted: gain=$loudnessGain cB")
+                    loudnessEnhancer?.enabled = isLoudnessEnhancerEnabled && loudnessGain > 0
+                    Log.d("Audio", "Audio boost preview: gain=$loudnessGain cB")
                 }
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
@@ -1956,13 +1930,34 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(Color.parseColor("#FF5722"))
             setOnClickListener {
                 loudnessGain = seekBar.progress.coerceIn(0, 4000)
-                loudnessEnhancer?.setTargetGain(loudnessGain)
                 isLoudnessEnhancerEnabled = loudnessGain > 0
-                loudnessEnhancer?.enabled = isLoudnessEnhancerEnabled
                 sharedPreferences.edit()
                     .putInt("loudness_gain", loudnessGain)
                     .putBoolean("loudness_enhancer_enabled", isLoudnessEnhancerEnabled)
                     .apply()
+                // Ensure loudnessEnhancer is initialized and updated
+                if (loudnessEnhancer == null || player.audioSessionId != audioSessionId) {
+                    try {
+                        audioSessionId = player.audioSessionId
+                        if (audioSessionId != AudioManager.ERROR) {
+                            loudnessEnhancer?.release()
+                            loudnessEnhancer = LoudnessEnhancer(audioSessionId)
+                            Log.d("Audio", "Reinitialized LoudnessEnhancer with audioSessionId=$audioSessionId")
+                        } else {
+                            Log.w("Audio", "Invalid audio session ID, cannot apply boost")
+                            Toast.makeText(this@MainActivity, "Audio boost unavailable", Toast.LENGTH_SHORT).show()
+                            dialog.dismiss()
+                            return@setOnClickListener
+                        }
+                    } catch (e: Exception) {
+                        Log.e("Audio", "Failed to reinitialize LoudnessEnhancer: ${e.message}", e)
+                        Toast.makeText(this@MainActivity, "Error applying audio boost", Toast.LENGTH_SHORT).show()
+                        dialog.dismiss()
+                        return@setOnClickListener
+                    }
+                }
+                loudnessEnhancer?.setTargetGain(loudnessGain)
+                loudnessEnhancer?.enabled = isLoudnessEnhancerEnabled && seekBarVolume.progress > 100 && loudnessGain > 0
                 updateVolume(seekBarVolume.progress)
                 Toast.makeText(this@MainActivity, "Audio boost set to ${loudnessGain / 100f}dB", Toast.LENGTH_SHORT).show()
                 dialog.dismiss()
@@ -1975,7 +1970,6 @@ class MainActivity : AppCompatActivity() {
         }
         dialog.show()
     }
-
     private fun showAudioDialog() {
         val builder = AlertDialog.Builder(this, R.style.CustomAlertDialog)
         builder.setTitle("Audio Tracks")

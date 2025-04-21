@@ -96,10 +96,7 @@ class VideoListActivity : AppCompatActivity() {
                         break
                     }
                 }
-                val words = cleaned.split(" ")
-                if (words.size > 4) {
-                    cleaned = words.take(4).joinToString(" ").trim()
-                }
+
             }
 
             if (cleaned.length < 3 || cleaned.isBlank()) {
@@ -222,16 +219,30 @@ class VideoListActivity : AppCompatActivity() {
                     videos = mutableListOf<VideoItem>().apply { addAll(emptyList()) },
                     onClick = { video ->
                         if (video.isSeriesHeader) {
-                            val cleanedTitle = video.tmdbData?.tvTitle ?: cleanTitleForTmdb(video.title).first
+                            val cleanedTitle = cleanTitleForTmdb(video.title).first
                             val episodes = originalVideoList.filter {
-                                cleanTitleForTmdb(it.title).first == cleanedTitle
+                                val episodeCleanedTitle = cleanTitleForTmdb(it.title).first
+                                Log.d(TAG, "Comparing episode title: '$episodeCleanedTitle' with series title: '$cleanedTitle'")
+                                episodeCleanedTitle == cleanedTitle
+                            }
+                            if (episodes.isEmpty()) {
+                                Log.w(TAG, "No episodes found for series '$cleanedTitle'")
+                                Toast.makeText(this, "No episodes found for $cleanedTitle", Toast.LENGTH_SHORT).show()
+                                return@VideoAdapter
+                            }
+                            // Validate TMDB titles
+                            val mismatchedEpisodes = episodes.filter {
+                                !it.tmdbData?.tvTitle.isNullOrBlank() && it.tmdbData?.tvTitle != cleanedTitle
+                            }
+                            if (mismatchedEpisodes.isNotEmpty()) {
+                                Log.w(TAG, "Mismatched TMDB titles for '$cleanedTitle': ${mismatchedEpisodes.map { it.tmdbData?.tvTitle }}")
                             }
                             val intent = Intent(this, SeriesCollectionActivity::class.java).apply {
-                                putExtra("SERIES_TITLE", video.title)
+                                putExtra("SERIES_TITLE", cleanedTitle)
                                 putParcelableArrayListExtra("EPISODES", ArrayList(episodes))
                             }
                             startActivity(intent)
-                            Animatoo.animateCard(this);
+                            Animatoo.animateCard(this)
                         } else {
                             startActivity(Intent(this, MainActivity::class.java).apply {
                                 putExtra("VIDEO_URI", video.uri.toString())
@@ -240,7 +251,7 @@ class VideoListActivity : AppCompatActivity() {
                                 putExtra("EPISODE_NUMBER", video.tmdbData?.episode ?: 1)
                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             })
-                            Animatoo.animateCard(this);
+                            Animatoo.animateCard(this)
                         }
                     },
                     updateOriginalList = { newList ->
@@ -280,8 +291,9 @@ class VideoListActivity : AppCompatActivity() {
                                 putParcelableArrayListExtra("EPISODES", ArrayList(episodes))
                             }
                             startActivity(intent)
-                            Animatoo.animateSwipeLeft(this) // Add swipe left animation
-                        } else {
+                            Animatoo.animateCard(this)
+                        }
+                        else {
                             startActivity(Intent(this, MainActivity::class.java).apply {
                                 putExtra("VIDEO_URI", video.uri.toString())
                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -455,9 +467,15 @@ class VideoListActivity : AppCompatActivity() {
                         attempt++
                         continue
                     }
+                    // Log folder name
+                    val folderName = File(query).parentFile?.name
+                    Log.d(TAG, "Folder name for '$query': $folderName")
+                    if (folderName != null && folderName != query && seriesData.tvTitle != query) {
+                        Log.w(TAG, "TMDB title '${seriesData.tvTitle}' differs from query '$query', folder: '$folderName'")
+                    }
                     Log.d(TAG, "Series found: title=${seriesData.tvTitle}, id=${seriesData.id}")
                     val episodeData = TmdbClient.getEpisodeData(
-                        seriesId = seriesData.id, // Use id as seriesId
+                        seriesId = seriesData.id,
                         seasonNumber = seasonEpisode.first,
                         episodeNumber = seasonEpisode.second
                     )
@@ -465,10 +483,9 @@ class VideoListActivity : AppCompatActivity() {
                         Log.d(TAG, "Episode found: name=${episodeData.name}, air_date=${episodeData.air_date}")
                         val seasonData = TmdbClient.getSeasonData(seriesData.id, seasonEpisode.first)
                         val posterPath = seasonData?.poster_path ?: seriesData.poster_path
-                        Log.d(TAG, "Poster selected: $posterPath")
                         return TmdbMovie(
                             movieTitle = episodeData.name,
-                            tvTitle = seriesData.tvTitle,
+                            tvTitle = query, // Use cleaned title
                             overview = episodeData.overview,
                             tvAirDate = episodeData.air_date,
                             vote_average = episodeData.vote_average,
@@ -479,7 +496,7 @@ class VideoListActivity : AppCompatActivity() {
                             episode = seasonEpisode.second
                         )
                     } else {
-                        Log.w(TAG, "Episode data missing or invalid for '$query' S${seasonEpisode.first}E${seasonEpisode.second}")
+                        Log.w(TAG, "Episode data missing for '$query' S${seasonEpisode.first}E${seasonEpisode.second}")
                         attempt++
                         continue
                     }
@@ -506,10 +523,9 @@ class VideoListActivity : AppCompatActivity() {
                 Log.d(TAG, "Falling back to series data for '$query'")
                 val seasonData = TmdbClient.getSeasonData(seriesData.id, seasonEpisode.first)
                 val posterPath = seasonData?.poster_path ?: seriesData.poster_path
-                Log.d(TAG, "Fallback poster: $posterPath")
                 return TmdbMovie(
-                    movieTitle = seriesData.tvTitle,
-                    tvTitle = seriesData.tvTitle,
+                    movieTitle = query,
+                    tvTitle = query, // Use cleaned title
                     overview = seriesData.overview,
                     tvAirDate = seriesData.tvAirDate,
                     vote_average = seriesData.vote_average,
@@ -708,23 +724,33 @@ class VideoListActivity : AppCompatActivity() {
             }
         }
     }
-        private fun groupVideosBySeries(inputList: MutableList<VideoItem>) {
+    private fun groupVideosBySeries(inputList: MutableList<VideoItem>) {
         videoList.clear()
         val seriesMap = inputList.groupBy {
             it.tmdbData?.let { data ->
-                if (data.media_type == "tv") data.id.toString() // Use TMDB ID for TV shows
+                if (data.media_type == "tv") data.id.toString()
                 else null
             } ?: run {
                 val (cleanedTitle, isTvShow, _) = cleanTitleForTmdb(it.title)
-                if (isTvShow) cleanedTitle else it.title // Use cleaned title for TV shows without TMDB data
+                if (isTvShow) cleanedTitle else it.title
             }
         }
 
         seriesMap.entries.sortedBy { it.key }.forEach { (key, episodes) ->
             if (episodes.isNotEmpty()) {
                 val isSeries = cleanTitleForTmdb(episodes.first().title).second
-                if (isSeries) { // Group all TV shows, even single episodes
-                    val seriesTitle = episodes.first().tmdbData?.tvTitle ?: key
+                if (isSeries) {
+                    val cleanedTitle = cleanTitleForTmdb(episodes.first().title).first
+                    // Validate episode titles
+                    val mismatchedEpisodes = episodes.filter {
+                        cleanTitleForTmdb(it.title).first != cleanedTitle
+                    }
+                    if (mismatchedEpisodes.isNotEmpty()) {
+                        Log.w(TAG, "Mismatched episodes for series '$cleanedTitle': ${mismatchedEpisodes.map { it.title }}")
+                    }
+                    // Use folder name as fallback if TMDB data is missing
+                    val folderName = File(episodes.first().path).parentFile?.name
+                    val seriesTitle = episodes.first().tmdbData?.tvTitle?.takeIf { it == cleanedTitle } ?: cleanedTitle
                     videoList.add(
                         VideoItem(
                             uri = Uri.EMPTY,
@@ -735,8 +761,9 @@ class VideoListActivity : AppCompatActivity() {
                             tmdbData = episodes.first().tmdbData?.copy(season = null, episode = null)
                         )
                     )
+                    Log.d(TAG, "Added series header: '$seriesTitle', folder: '$folderName', episodes: ${episodes.size}")
                 } else {
-                    videoList.addAll(episodes) // Add individual items if not a TV show
+                    videoList.addAll(episodes)
                 }
             }
         }
@@ -882,7 +909,8 @@ class VideoListActivity : AppCompatActivity() {
         val isSeriesHeader: Boolean = false,
         val groupCount: Int = 0,
         val tmdbData: TmdbMovie? = null
-    ) : Parcelable {
+    ) :
+        Parcelable {
         constructor(parcel: Parcel) : this(
             uri = parcel.readParcelable(Uri::class.java.classLoader)!!,
             title = parcel.readString()!!,
