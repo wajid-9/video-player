@@ -126,7 +126,7 @@ data class TmdbSeason(
 
 object TmdbClient {
     private const val BASE_URL = "https://api.themoviedb.org/3/"
-    private const val API_KEY = "f8a4820def9b2c491b5526997a764aa3" // Ensure this is valid
+    private const val API_KEY = "@@@@@@@" // Ensure this is valid
     const val IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w200"
     private const val TAG = "TmdbClient"
 

@@ -39,7 +39,7 @@ class SeriesCollectionActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "SeriesCollectionActivity"
-        private const val TMDB_API_KEY = "f8a4820def9b2c491b5526997a764aa3" // Replace with your actual TMDB API key
+        private const val TMDB_API_KEY = "@@@@@@" // Replace with your actual TMDB API key
         private const val TMDB_BASE_URL = "https://api.themoviedb.org/3/"
         private const val TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w1280" // Backdrop size
         private const val TMDB_POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500" // Poster size
