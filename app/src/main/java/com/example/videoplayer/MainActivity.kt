@@ -867,8 +867,8 @@ class MainActivity : AppCompatActivity() {
     }
     private fun initPlayer() {
         val renderersFactory = DefaultRenderersFactory(this)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
-            .setEnableDecoderFallback(true)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            .setEnableAudioTrackPlaybackParams(true)
         trackSelector = DefaultTrackSelector(this)
         player = ExoPlayer.Builder(this)
             .setRenderersFactory(renderersFactory)

@@ -18,7 +18,6 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
-
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -53,6 +52,10 @@ dependencies {
     implementation(libs.zoomlayout)
     implementation(libs.androidx.swiperefreshlayout)
     implementation (libs.retrofit)
+    implementation(fileTree("libs") {
+        include("*.jar", "*.aar")
+    })
+
     implementation ("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     annotationProcessor ("com.github.bumptech.glide:compiler:4.12.0")
     implementation ("com.squareup.retrofit2:converter-gson:2.11.0")
