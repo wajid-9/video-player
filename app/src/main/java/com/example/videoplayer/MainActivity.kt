@@ -19,7 +19,7 @@ import android.provider.OpenableColumns
 import android.util.Log
 import android.view.*
 import android.widget.*
-import androidx.appcompat.app.AlertDialog
+import androidx.appcompat.app.  AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -342,6 +342,7 @@ class MainActivity : AppCompatActivity() {
     }
     // New helper function to encapsulate playback and title update
     private fun playVideoAndUpdateTitle(uri: Uri, seriesId: Int, seasonNumber: Int, episodeNumber: Int) {
+        currentTmdbData = null // Reset TMDB data to prevent stale metadata
         playVideo(uri)
         updateVideoTitle(uri, seriesId, seasonNumber, episodeNumber)
     }
@@ -487,32 +488,37 @@ class MainActivity : AppCompatActivity() {
         }
         CoroutineScope(Dispatchers.Main).launch {
             try {
+                val seriesId = intent.getIntExtra("SERIES_ID", -1)
+                val seasonNumber = intent.getIntExtra("SEASON_NUMBER", 1)
+                val episodeNumber = intent.getIntExtra("EPISODE_NUMBER", 1)
                 val tmdbData = video.tmdbData ?: run {
                     val (cleanedName, isTvShow, seasonEpisode) = cleanTitleForTmdb(video.title)
                     TmdbClient.getMediaData(cleanedName, isTvShow)?.also {
-                        if (isTvShow && seasonEpisode != null) {
-                            val episodeData = TmdbClient.getEpisodeData(it.seriesId ?: return@also, seasonEpisode.first, seasonEpisode.second)
+                        if (isTvShow && (seriesId != -1 || seasonEpisode != null)) {
+                            val finalSeason = if (seriesId != -1) seasonNumber else seasonEpisode?.first ?: 1
+                            val finalEpisode = if (seriesId != -1) episodeNumber else seasonEpisode?.second ?: 1
+                            val seriesIdToUse = seriesId.takeIf { it != -1 } ?: it.seriesId ?: return@also
+                            val episodeData = TmdbClient.getEpisodeData(seriesIdToUse, finalSeason, finalEpisode)
                             if (episodeData != null) {
                                 it.season = episodeData.season_number
                                 it.episode = episodeData.episode_number
                                 it.displayTitle = episodeData.name ?: it.displayTitle
+                                it.overview = episodeData.overview ?: it.overview
+                                it.displayDate = episodeData.air_date ?: it.displayDate
                             }
                         }
                     }
                 }
-
                 val dialogView = LayoutInflater.from(this@MainActivity).inflate(R.layout.dialog_tmdb_data, null)
                 val dialog = AlertDialog.Builder(this@MainActivity, R.style.CustomAlertDialog)
                     .setTitle("Metadata")
                     .setView(dialogView)
                     .setPositiveButton("OK") { dialog, _ -> dialog.dismiss() }
                     .create()
-
                 if (tmdbData != null) {
                     dialogView.findViewById<TextView>(R.id.tmdb_title).text = tmdbData.displayTitle
                     dialogView.findViewById<TextView>(R.id.tmdb_type).text =
                         if (tmdbData.media_type == "tv") "TV Show" else "Movie"
-
                     if (tmdbData.season != null && tmdbData.episode != null) {
                         dialogView.findViewById<TextView>(R.id.tmdb_season_episode).apply {
                             text = "Season ${tmdbData.season}, Episode ${tmdbData.episode}"
@@ -521,16 +527,12 @@ class MainActivity : AppCompatActivity() {
                     } else {
                         dialogView.findViewById<TextView>(R.id.tmdb_season_episode).visibility = View.GONE
                     }
-
                     dialogView.findViewById<TextView>(R.id.tmdb_release_date).text =
                         "Release Date: ${tmdbData.displayDate ?: "Not available"}"
-
                     dialogView.findViewById<TextView>(R.id.tmdb_rating).text =
                         tmdbData.vote_average?.let { "${String.format("%.1f", it)}/10" } ?: "Not rated"
-
                     dialogView.findViewById<TextView>(R.id.tmdb_overview).text =
                         tmdbData.overview?.takeIf { it.isNotBlank() } ?: "No description available"
-
                     val posterImageView = dialogView.findViewById<ImageView>(R.id.tmdb_poster)
                     if (tmdbData.poster_path?.isNotEmpty() == true) {
                         val imageUrl = "${TmdbClient.IMAGE_BASE_URL}${tmdbData.poster_path}"
@@ -557,14 +559,20 @@ class MainActivity : AppCompatActivity() {
                     dialogView.findViewById<TextView>(R.id.tmdb_overview).text = "No metadata available for this video."
                     dialogView.findViewById<ImageView>(R.id.tmdb_poster).setImageResource(R.drawable.placeholder)
                 }
-
                 dialog.setOnShowListener {
                     dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.setTextColor(Color.WHITE)
+                    val window = dialog.window
+                    val displayMetrics = resources.displayMetrics
+                    val isLandscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+                    val maxHeight = (displayMetrics.heightPixels * (if (isLandscape) 0.85 else 0.9)).toInt()
+                    val maxWidth = (displayMetrics.widthPixels * (if (isLandscape) 0.9 else 0.95)).toInt()
+                    window?.setLayout(maxWidth, maxHeight)
+                    window?.setBackgroundDrawableResource(R.drawable.dialog_background)
                 }
                 dialog.show()
             } catch (e: Exception) {
                 Log.e("TMDb", "Error showing TMDB data: ${e.message}", e)
-                Toast.makeText(this@MainActivity, "Error retrieving metadata", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "Failed to retrieve metadata: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -674,70 +682,127 @@ class MainActivity : AppCompatActivity() {
         updateSubtitles(player.currentPosition)
         resetHideControlsTimer()
     }
-    private fun cleanTitleForTmdb(title: String): Triple<String, Boolean, Pair<Int, Int>?> {
-        // Remove file extension
-        var cleaned = title.substringBeforeLast(".").trim()
+    private fun cleanTitleForTmdb(name: String): Triple<String, Boolean, Pair<Int, Int>?> {
+        Log.d("TMDb", "Cleaning title: '$name'")
+        val original = name.substringBeforeLast(".", name)
+        val seasonEpisodeRegex = Regex("(?i)[ ._-]?(S(\\d{1,2})[ ._-]?E(\\d{1,2})|(\\d{1,2})x(\\d{1,2}))")
+        val yearRegex = Regex("(19\\d{2}|20\\d{2})")
+        val noiseWordsRegex = Regex(
+            "(?i)\\b(720p|1080p|2160p|4k|ds4k|webrip|web[- ]dl|web[- ]hd|bluray|x264|x265|hevc|" +
+                    "amzn|nf|ddp?|5\\.1|10bit|eac3|aac|hdr|hdtv|dts|truehd|atmos|esub|dual|" +
+                    "latino|english|hindi|multi|heteam|pahe|in|budgetbits|hdhub4u|iboxtv|900mb|150mb|250mb|400mb|500mb|700mb|1gb|2gb|-|hc|" +
+                    "h264|avc|galaxytv|hdhub4u.ms\\[.*?\\]|2ch|psa|tving|phant|dd)\\b",
+            RegexOption.IGNORE_CASE
+        )
+        val tvKeywords = setOf("season\\s*\\d+", "episode\\s*\\d+", "s\\d{1,2}\\s*e\\d{1,2}", "series\\s*\\d*")
 
-        // Remove common video metadata patterns
-        cleaned = cleaned.replace(Regex("(?i)(S\\d{1,2}E\\d{1,2}|\\d{3,4}p|BluRay|WEBRip|HDRip|x264|x265|h264|h265|AAC|DDP|DD5\\.1|TrueHD|Atmos|HEVC|AVC|10bit|8bit|1080i|2160p|480p|720p|4K|UHD|SD|HD|Rip|REPACK|PROPER|EXTENDED|UNRATED|REMASTERED|DIRECTORS\\.CUT|DC|\\d+MB|AMZN|NF|DSNP|HMAX|HBO|BBC|ITV|DISNEY|CRITERION|IMAX|MULTI|LiNE|AAC5\\.1|AC3|MP4|MKV|Hi10P|DTS|DTS-HD|MA\\d\\.\\d|SUBBED|DUBBED|\\[.*?\\]|\\(.*?\\)|\\{.*?\\})"), "").trim()
-
-        // Remove release groups and other tags
-        cleaned = cleaned.replace(Regex("(?i)(HETeam|YTS|PSA|Pahe|EZTV|EVO|TiGole|GalaxyRG|ELiTE|SPARKS|GOSSIP|DRONES|ION10|MeGusta|AFG|CMRG|FLUX|LAZY|BTX|RMTeam|SSRMovies|KOGi|DiAMOND|CiNEFiLE|HiVE|SHiNiGAMi|BAE|BRRip|WEB-DL|DDP5\\.1)"), "").trim()
-
-        // Remove years (e.g., "(2023)") and extra spaces
-        cleaned = cleaned.replace(Regex("\\(\\d{4}\\)|\\b\\d{4}\\b"), "").trim()
-
-        // Replace special characters and normalize spaces
-        cleaned = cleaned.replace(Regex("[^a-zA-Z0-9\\s]"), " ").replace(Regex("\\s+"), " ").trim()
-
-        // Stop at season/episode if present to avoid including extra text
-        val seasonEpisodeMatch = Regex("(?i)S(\\d{1,2})E(\\d{1,2})").find(title)
-        if (seasonEpisodeMatch != null) {
-            val index = seasonEpisodeMatch.range.first
-            cleaned = title.substring(0, index).substringBeforeLast(".").trim()
-            // Reapply cleaning steps to the portion before SxxExx
-            cleaned = cleaned.replace(Regex("\\(\\d{4}\\)|\\b\\d{4}\\b|\\[.*?\\]|\\{.*?\\}"), "").trim()
-            cleaned = cleaned.replace(Regex("[^a-zA-Z0-9\\s]"), " ").replace(Regex("\\s+"), " ").trim()
-        }
-
-        // Detect if it's a TV show
-        val isTvShow = seasonEpisodeMatch != null
+        // Extract season and episode
+        val seasonEpisodeMatch = seasonEpisodeRegex.find(original)
         val seasonEpisode = seasonEpisodeMatch?.let {
-            Pair(it.groups[1]!!.value.toInt(), it.groups[2]!!.value.toInt())
+            Log.d("TMDb", "SeasonEpisode match: ${it.value}, groups: ${it.groupValues}")
+            when {
+                it.groupValues[2].isNotEmpty() && it.groupValues[3].isNotEmpty() -> {
+                    try {
+                        it.groupValues[2].toInt() to it.groupValues[3].toInt()
+                    } catch (e: NumberFormatException) {
+                        Log.e("TMDb", "Failed to parse SXXEXX: ${it.groupValues[2]} or ${it.groupValues[3]}")
+                        null
+                    }
+                }
+                it.groupValues[4].isNotEmpty() && it.groupValues[5].isNotEmpty() -> {
+                    try {
+                        it.groupValues[4].toInt() to it.groupValues[5].toInt()
+                    } catch (e: NumberFormatException) {
+                        Log.e("TMDb", "Failed to parse XXxXX: ${it.groupValues[4]} or ${it.groupValues[5]}")
+                        null
+                    }
+                }
+                else -> {
+                    Log.w("TMDb", "Invalid season/episode match: ${it.groupValues}")
+                    null
+                }
+            }
         }
 
-        // Fallback: If cleaned title is empty, use original title without extension
-        val finalCleaned = if (cleaned.isBlank()) {
-            title.substringBeforeLast(".").replace(Regex("[^a-zA-Z0-9\\s]"), " ").replace(Regex("\\s+"), " ").trim()
+        // Extract year
+        val yearMatch = yearRegex.find(original)
+        val year = yearMatch?.value
+
+        // Clean title
+        var cleaned = original
+            .replace(seasonEpisodeRegex, "")
+            .replace(noiseWordsRegex, "")
+            .replace("[._\\-\\[\\]\\(\\)]+".toRegex(), " ")
+            .trim()
+
+        // Remove any remaining numbers that might be sizes or other noise
+        cleaned = cleaned.replace("\\b\\d+\\s*(mb|gb|k)\\b".toRegex(RegexOption.IGNORE_CASE), "").trim()
+
+        // Special case for Sex/Life
+        cleaned = cleaned.replace("Sex Life", "Sex/Life")
+
+        // Determine if it's a TV show
+        val isTvShow = seasonEpisode != null || tvKeywords.any { keyword ->
+            original.lowercase().contains(keyword.toRegex())
+        }
+
+        // Ensure year is included in cleaned title for TMDB queries
+        val finalCleaned = if (year != null && !cleaned.contains(year)) {
+            "$cleaned $year"
         } else {
             cleaned
         }
 
-        Log.d("TMDb", "Cleaned title: raw='$title', cleaned='$finalCleaned', isTvShow=$isTvShow, seasonEpisode=$seasonEpisode")
+        // Fallback for minimal titles
+        if (finalCleaned.length < 3 || finalCleaned.isBlank()) {
+            cleaned = original
+                .replace(seasonEpisodeRegex, "")
+                .replace(yearRegex, "")
+                .replace(noiseWordsRegex, "")
+                .replace("[._\\-\\[\\]\\(\\)]+".toRegex(), " ")
+                .replace("\\b\\d+\\s*(mb|gb|k)\\b".toRegex(RegexOption.IGNORE_CASE), "")
+                .trim()
+            // Re-apply year if available
+            val finalCleanedFallback = if (year != null && !cleaned.contains(year)) {
+                "$cleaned $year"
+            } else {
+                cleaned
+            }
+            if (finalCleanedFallback.isBlank()) {
+                "Unknown Title"
+            } else {
+                finalCleanedFallback
+            }
+        }
+
+        Log.d("TMDb", "Raw: '$name' → Cleaned: '$finalCleaned', TV Show: $isTvShow, Season/Episode: $seasonEpisode, Year: $year")
         return Triple(finalCleaned, isTvShow, seasonEpisode)
     }
+
     private fun updateVideoTitle(videoUri: Uri, seriesId: Int = -1, seasonNumber: Int = 1, episodeNumber: Int = 1) {
         val title = getVideoTitleFromUri(videoUri)
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val (cleanedName, isTvShow, seasonEpisode) = cleanTitleForTmdb(title)
+                val finalSeriesId = seriesId.takeIf { it != -1 }
+                val finalSeason = seriesId.takeIf { it != -1 }?.let { seasonNumber } ?: seasonEpisode?.first ?: 1
+                val finalEpisode = seriesId.takeIf { it != -1 }?.let { episodeNumber } ?: seasonEpisode?.second ?: 1
                 val tmdbData = TmdbClient.getMediaData(cleanedName, isTvShow)?.also {
-                    if (isTvShow && (seriesId != -1 || seasonEpisode != null)) {
-                        val season = if (seriesId != -1) seasonNumber else seasonEpisode?.first ?: 1
-                        val episode = if (seriesId != -1) episodeNumber else seasonEpisode?.second ?: 1
-                        val seriesIdToUse = seriesId.takeIf { it != -1 } ?: it.seriesId ?: return@also
-                        Log.d("TMDb", "Fetching episode data: seriesId=$seriesIdToUse, season=$season, episode=$episode")
-                        val episodeData = TmdbClient.getEpisodeData(seriesIdToUse, season, episode)
+                    if (isTvShow && (finalSeriesId != null || it.seriesId != null)) {
+                        val seriesIdToUse = finalSeriesId ?: it.seriesId ?: return@also
+                        Log.d("TMDb", "Fetching episode data: seriesId=$seriesIdToUse, season=$finalSeason, episode=$finalEpisode")
+                        val episodeData = TmdbClient.getEpisodeData(seriesIdToUse, finalSeason, finalEpisode)
                         if (episodeData != null) {
                             it.season = episodeData.season_number
                             it.episode = episodeData.episode_number
                             it.displayTitle = episodeData.name ?: it.displayTitle
-                            Log.d("TMDb", "Episode data fetched: name=${episodeData.name}, season=${episodeData.season_number}, episode=${episodeData.episode_number}")
+                            it.overview = episodeData.overview ?: it.overview
+                            it.displayDate = episodeData.air_date ?: it.displayDate
                         } else {
-                            Log.w("TMDb", "Episode data not found for seriesId=$seriesIdToUse, season=$season, episode=$episode")
+                            Log.w("TMDb", "Episode data not found for seriesId=$seriesIdToUse, season=$finalSeason, episode=$finalEpisode")
                         }
                     } else {
-                        Log.d("TMDb", "Not a TV show or no season/episode data: isTvShow=$isTvShow, seasonEpisode=$seasonEpisode")
+                        Log.d("TMDb", "Not a TV show or no series ID: isTvShow=$isTvShow, seriesId=$seriesId, tmdbSeriesId=${it.seriesId}")
                     }
                 }
                 withContext(Dispatchers.Main) {
@@ -867,13 +932,12 @@ class MainActivity : AppCompatActivity() {
     }
     private fun initPlayer() {
         val renderersFactory = DefaultRenderersFactory(this)
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
+            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER) // 👈 Prefer FFmpeg
             .setEnableAudioTrackPlaybackParams(true)
+
         trackSelector = DefaultTrackSelector(this)
         player = ExoPlayer.Builder(this)
             .setRenderersFactory(renderersFactory)
-            .setTrackSelector(trackSelector)
-            .setSeekParameters(SeekParameters.EXACT)
             .build()
         playerView.player = player
         playerView.useController = false
@@ -962,7 +1026,15 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPlayerError(error: PlaybackException) {
                 Log.e("Player", "Playback error: ${error.message}", error)
-                Toast.makeText(this@MainActivity, "Error: ${error.message}", Toast.LENGTH_LONG).show()
+                when (error.errorCode) {
+                    PlaybackException.ERROR_CODE_DECODER_INIT_FAILED -> {
+                        Toast.makeText(this@MainActivity, "Decoder initialization failed. FFmpeg may not support this format.", Toast.LENGTH_LONG).show()
+                    }
+
+                    else -> {
+                        Toast.makeText(this@MainActivity, "Error: ${error.message}", Toast.LENGTH_LONG).show()
+                    }
+                }
             }
 
             override fun onCues(cues: MutableList<Cue>) {
@@ -1278,7 +1350,6 @@ class MainActivity : AppCompatActivity() {
             true
         }
     }
-
     private fun setupSeekBars() {
         videoSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -1404,7 +1475,6 @@ class MainActivity : AppCompatActivity() {
             handler.removeCallbacks(hideLockButtonRunnable)
             handler.postDelayed(hideLockButtonRunnable, hideControlsDelay)
         } else {
-            Toast.makeText(this, "Controls unlocked", Toast.LENGTH_SHORT).show()
             showControls()
             unlockIcon.animate()
                 .alpha(0f)
@@ -1523,9 +1593,17 @@ class MainActivity : AppCompatActivity() {
         aspectRatioButton.visibility = View.VISIBLE
         lockText.visibility = View.VISIBLE
         back.visibility = View.VISIBLE
-        infoIcon.visibility = View.VISIBLE // Make info button visible
+        infoIcon.visibility = View.VISIBLE
         audioSubtitleText.visibility = View.VISIBLE
         aspectRatioText.visibility = View.VISIBLE
+        val params = subtitleTextView.layoutParams as RelativeLayout.LayoutParams
+        params.removeRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
+        params.addRule(RelativeLayout.BELOW, R.id.just)
+
+        val windowInsetsController = WindowCompat.getInsetsController(window, playerView)
+        windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
+        windowInsetsController.isAppearanceLightStatusBars = false
+
         unlockIcon.animate()
             .alpha(0f)
             .setDuration(200)
@@ -1555,6 +1633,14 @@ class MainActivity : AppCompatActivity() {
         infoIcon.visibility = View.GONE
         aspectRatioText.visibility = View.GONE
         back.visibility = View.GONE
+        val windowInsetsController = WindowCompat.getInsetsController(window, playerView)
+        windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
+        windowInsetsController.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        val params = subtitleTextView.layoutParams as RelativeLayout.LayoutParams
+        params.removeRule(RelativeLayout.BELOW)
+        params.addRule(RelativeLayout.ALIGN_PARENT_BOTTOM)
+        subtitleTextView.layoutParams = params
         if (isLocked) {
             lockButton.visibility = View.VISIBLE
             lockText.visibility = View.VISIBLE

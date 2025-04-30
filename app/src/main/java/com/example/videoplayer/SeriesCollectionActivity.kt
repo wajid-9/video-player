@@ -39,7 +39,7 @@ class SeriesCollectionActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "SeriesCollectionActivity"
-        private const val TMDB_API_KEY = "@@@@@@" // Replace with your actual TMDB API key
+        private const val TMDB_API_KEY = "f8a4820def9b2c491b5526997a764aa3"
         private const val TMDB_BASE_URL = "https://api.themoviedb.org/3/"
         private const val TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w1280" // Backdrop size
         private const val TMDB_POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500" // Poster size
@@ -217,19 +217,43 @@ class SeriesCollectionActivity : AppCompatActivity() {
 
     private suspend fun fetchTmdbData(seriesTitle: String): TmdbTvShowDetails? {
         return try {
-            val response = tmdbApi.searchTvShow(TMDB_API_KEY, seriesTitle)
-            val tvShow = response.results.firstOrNull { it.name.equals(seriesTitle, ignoreCase = true) }
+            // Clean the title for better TMDB matching
+            val cleanedTitle = seriesTitle.replace(Regex("[^a-zA-Z0-9\\s/]"), " ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .replace("Sex Life", "Sex/Life") // Special case for Sex/Life
+            Log.d(TAG, "Searching TMDB for cleaned title: '$cleanedTitle'")
+
+            val response = tmdbApi.searchTvShow(TMDB_API_KEY, cleanedTitle)
+            val tvShow = response.results.firstOrNull {
+                it.name.equals(cleanedTitle, ignoreCase = true) ||
+                        it.name.replace("/", "").equals(cleanedTitle.replace("/", ""), ignoreCase = true)
+            }
             if (tvShow != null) {
+                Log.d(TAG, "TMDB match found: id=${tvShow.id}, name=${tvShow.name}, backdrop=${tvShow.backdrop_path}")
                 tmdbApi.getTvShowDetails(tvShow.id, TMDB_API_KEY)
             } else {
-                null
+                Log.w(TAG, "No TMDB match for '$cleanedTitle', trying broader search")
+                // Fallback to broader search by removing year or special characters
+                val broaderTitle = cleanedTitle.replace(Regex("\\b\\d{4}\\b"), "").trim()
+                val broaderResponse = tmdbApi.searchTvShow(TMDB_API_KEY, broaderTitle)
+                val fallbackShow = broaderResponse.results.firstOrNull {
+                    it.name.contains("Sex/Life", ignoreCase = true) ||
+                            it.name.replace("/", "").contains("Sex Life", ignoreCase = true)
+                }
+                if (fallbackShow != null) {
+                    Log.d(TAG, "Fallback TMDB match: id=${fallbackShow.id}, name=${fallbackShow.name}")
+                    tmdbApi.getTvShowDetails(fallbackShow.id, TMDB_API_KEY)
+                } else {
+                    Log.w(TAG, "No TMDB match after fallback for '$broaderTitle'")
+                    null
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "TMDB search failed: ${e.message}", e)
             null
         }
     }
-
     private fun loadEpisodes() {
         Log.d(TAG, "loadEpisodes started")
         if (isRefreshing) {

@@ -14,13 +14,17 @@ interface TmdbService {
     @GET("search/movie")
     suspend fun searchMovies(
         @Query("api_key") apiKey: String,
-        @Query("query") query: String
+        @Query("query") query: String,
+        @Query("language") language: String = "en-US",
+        @Query("include_image_language") includeImageLanguage: String = "en,null"
     ): TmdbResponse
 
     @GET("search/tv")
     suspend fun searchTvShows(
         @Query("api_key") apiKey: String,
-        @Query("query") query: String
+        @Query("query") query: String,
+        @Query("language") language: String = "en-US",
+        @Query("include_image_language") includeImageLanguage: String = "en,null"
     ): TmdbResponse
 
     @GET("tv/{seriesId}/season/{seasonNumber}/episode/{episodeNumber}")
@@ -38,14 +42,13 @@ interface TmdbService {
         @Query("api_key") apiKey: String
     ): TmdbSeason
 }
-
 data class TmdbResponse(
     val results: List<TmdbMovie> = emptyList()
 )
 data class TmdbMovie(
     @SerializedName("title") val movieTitle: String? = null,
     @SerializedName("name") val tvTitle: String? = null,
-    val overview: String? = null,
+    var overview: String? = null,
     @SerializedName("release_date") val movieReleaseDate: String? = null,
     @SerializedName("first_air_date") val tvAirDate: String? = null,
     val vote_average: Float? = null,
@@ -64,7 +67,7 @@ data class TmdbMovie(
             _displayTitle = value
         }
 
-    val displayDate: String?
+    var displayDate: String? = null
         get() = tvAirDate ?: movieReleaseDate
 
     val seriesId: Int?
@@ -126,7 +129,7 @@ data class TmdbSeason(
 
 object TmdbClient {
     private const val BASE_URL = "https://api.themoviedb.org/3/"
-    private const val API_KEY = "@@@@@@@" // Ensure this is valid
+    private const val API_KEY = "f8a4820def9b2c491b5526997a764aa3"
     const val IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w200"
     private const val TAG = "TmdbClient"
 
@@ -150,18 +153,35 @@ object TmdbClient {
             } else {
                 service.searchMovies(API_KEY, query)
             }
+            Log.d(TAG, "TMDB search returned ${response.results.size} results for '$query'")
+            // Select the first result with a non-null poster_path
+            val bestResult = response.results.firstOrNull { it.poster_path != null }
+            if (bestResult != null) {
+                Log.d(TAG, "Selected result: title=${bestResult.displayTitle}, id=${bestResult.id}, poster_path=${bestResult.poster_path}")
+                return bestResult
+            }
+            Log.w(TAG, "No results with poster_path for '$query'")
+            // Fallback: Retry without year for movies
+            if (!isTvShow && query.contains("\\s\\d{4}$".toRegex())) {
+                val queryWithoutYear = query.replace("\\s\\d{4}$".toRegex(), "").trim()
+                Log.d(TAG, "Retrying TMDB query without year: '$queryWithoutYear'")
+                val fallbackResponse = service.searchMovies(API_KEY, queryWithoutYear)
+                val fallbackResult = fallbackResponse.results.firstOrNull { it.poster_path != null }
+                if (fallbackResult != null) {
+                    Log.d(TAG, "Fallback result: title=${fallbackResult.displayTitle}, id=${fallbackResult.id}, poster_path=${fallbackResult.poster_path}")
+                    return fallbackResult
+                }
+                Log.w(TAG, "No fallback results with poster_path for '$queryWithoutYear'")
+            }
+            // If no poster found, return the first result (if any)
             response.results.firstOrNull()?.also {
-                Log.d(TAG, "TMDB success: title=${it.displayTitle}, id=${it.id}, media_type=${it.media_type}")
-            } ?: run {
-                Log.w(TAG, "No results for query: '$query'")
-                null
+                Log.d(TAG, "Falling back to first result without poster: title=${it.displayTitle}, id=${it.id}")
             }
         } catch (e: Exception) {
             Log.e(TAG, "TMDB error for query '$query': ${e.message}", e)
             null
         }
     }
-
     suspend fun getEpisodeData(
         seriesId: Int,
         seasonNumber: Int,

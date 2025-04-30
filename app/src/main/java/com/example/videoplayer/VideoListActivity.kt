@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.IntentSender
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -47,80 +48,102 @@ class VideoListActivity : AppCompatActivity() {
 
     companion object {
         private const val PREFS_NAME = "VideoPlayerPrefs"
-        private const val KEY_VIEW_MODE = "isGridMode" // Key to store view mode
+        private const val KEY_VIEW_MODE = "isGridMode"
         private const val REQUEST_CODE_PERMISSIONS = 100
         private const val TAG = "VideoListActivity"
 
         fun cleanTitleForTmdb(name: String): Triple<String, Boolean, Pair<Int, Int>?> {
+            Log.d(TAG, "Cleaning title: '$name'")
             val original = name.substringBeforeLast(".", name)
-            val seasonEpisodeRegex = Regex("s(\\d{1,2})e(\\d{1,2})", RegexOption.IGNORE_CASE)
-            val yearRegex = Regex("\\(\\d{4}\\)|\\b(19|20)\\d{2}\\b")
+            val seasonEpisodeRegex = Regex("(?i)[ ._-]?(S(\\d{1,2})[ ._-]?E(\\d{1,2})|(\\d{1,2})x(\\d{1,2}))")
+            val yearRegex = Regex("(19\\d{2}|20\\d{2})")
             val noiseWordsRegex = Regex(
-                "(?i)\\b(720p|1080p|2160p|4k|ds4k|webrip|web[- ]dl|bluray|x264|x265|hevc|" +
+                "(?i)\\b(720p|1080p|2160p|4k|ds4k|webrip|web[- ]dl|web[- ]hd|bluray|x264|x265|hevc|" +
                         "amzn|nf|ddp?|5\\.1|10bit|eac3|aac|hdr|hdtv|dts|truehd|atmos|esub|dual|" +
-                        "latino|english|hindi|multi|heteam|pahe|budgetbits|hdhub4u|iboxtv|\\[.*?\\])\\b"
+                        "latino|english|hindi|multi|heteam|pahe|in|budgetbits|hdhub4u|iboxtv|900mb|150mb|250mb|400mb|500mb|700mb|1gb|2gb|-|hc|" +
+                        "h264|avc|galaxytv|hdhub4u.ms\\[.*?\\]|2ch|psa|i|tving|phant|dd)\\b",
+                RegexOption.IGNORE_CASE
             )
+            val tvKeywords = setOf("season\\s*\\d+", "episode\\s*\\d+", "s\\d{1,2}\\s*e\\d{1,2}", "series\\s*\\d*")
 
-            val match = seasonEpisodeRegex.find(original)
-            val isTvShow = match != null
-            val seasonEpisode = match?.let {
-                val season = it.groupValues[1].toIntOrNull() ?: 1
-                val episode = it.groupValues[2].toIntOrNull() ?: 1
-                season to episode
-            }
-
-            val yearMatch = yearRegex.find(original)
-            val year = yearMatch?.value?.replace("(", "")?.replace(")", "")?.toIntOrNull()
-
-            var cleaned = original
-                .replace(yearRegex, "")
-                .replace(noiseWordsRegex, "")
-                .replace("[^a-zA-Z0-9\\s]".toRegex(), " ")
-                .replace("\\s+", " ")
-                .trim()
-
-            if (isTvShow && match != null) {
-                val seasonIndex = match.range.first
-                cleaned = original.substring(0, seasonIndex)
-                    .replace(yearRegex, "")
-                    .replace(noiseWordsRegex, "")
-                    .replace("[^a-zA-Z0-9\\s]".toRegex(), " ")
-                    .replace("\\s+", " ")
-                    .trim()
-
-                val separators = listOf(" - ", ": ", " episode ", " ep ")
-                for (separator in separators) {
-                    val index = cleaned.indexOf(separator, ignoreCase = true)
-                    if (index != -1) {
-                        cleaned = cleaned.substring(0, index).trim()
-                        break
+            // Extract season and episode
+            val seasonEpisodeMatch = seasonEpisodeRegex.find(original)
+            val seasonEpisode = seasonEpisodeMatch?.let {
+                Log.d(TAG, "SeasonEpisode match: ${it.value}, groups: ${it.groupValues}")
+                when {
+                    it.groupValues[2].isNotEmpty() && it.groupValues[3].isNotEmpty() -> {
+                        try {
+                            it.groupValues[2].toInt() to it.groupValues[3].toInt()
+                        } catch (e: NumberFormatException) {
+                            Log.e(TAG, "Failed to parse SXXEXX: ${it.groupValues[2]} or ${it.groupValues[3]}")
+                            null
+                        }
+                    }
+                    it.groupValues[4].isNotEmpty() && it.groupValues[5].isNotEmpty() -> {
+                        try {
+                            it.groupValues[4].toInt() to it.groupValues[5].toInt()
+                        } catch (e: NumberFormatException) {
+                            Log.e(TAG, "Failed to parse XXxXX: ${it.groupValues[4]} or ${it.groupValues[5]}")
+                            null
+                        }
+                    }
+                    else -> {
+                        Log.w(TAG, "Invalid season/episode match: ${it.groupValues}")
+                        null
                     }
                 }
-
             }
 
-            if (cleaned.length < 3 || cleaned.isBlank()) {
+            // Extract year
+            val yearMatch = yearRegex.find(original)
+            val year = yearMatch?.value
+
+            // Clean title
+            var cleaned = original
+                .replace(seasonEpisodeRegex, "")
+                .replace(noiseWordsRegex, "")
+                .replace("[._\\-\\[\\]\\(\\)]+".toRegex(), " ")
+                .trim()
+
+            // Remove any remaining numbers that might be sizes or other noise
+            cleaned = cleaned.replace("\\b\\d+\\s*(mb|gb|k)\\b".toRegex(RegexOption.IGNORE_CASE), "").trim()
+
+            // Determine if it's a TV show
+            val isTvShow = seasonEpisode != null || tvKeywords.any { keyword ->
+                original.lowercase().contains(keyword.toRegex())
+            }
+
+            // Ensure year is included in cleaned title for TMDB queries
+            val finalCleaned = if (year != null && !cleaned.contains(year)) {
+                "$cleaned $year"
+            } else {
+                cleaned
+            }
+
+            // Fallback for minimal titles
+            if (finalCleaned.length < 3 || finalCleaned.isBlank()) {
                 cleaned = original
                     .replace(seasonEpisodeRegex, "")
                     .replace(yearRegex, "")
                     .replace(noiseWordsRegex, "")
-                    .replace("[^a-zA-Z0-9\\s]".toRegex(), " ")
-                    .replace("\\s+", " ")
+                    .replace("[._\\-\\[\\]\\(\\)]+".toRegex(), " ")
+                    .replace("\\b\\d+\\s*(mb|gb|k)\\b".toRegex(RegexOption.IGNORE_CASE), "")
                     .trim()
+                // Re-apply year if available
+                val finalCleanedFallback = if (year != null && !cleaned.contains(year)) {
+                    "$cleaned $year"
+                } else {
+                    cleaned
+                }
+                if (finalCleanedFallback.isBlank()) {
+                    "Unknown Title"
+                } else {
+                    finalCleanedFallback
+                }
             }
 
-            if (cleaned.isBlank()) {
-                cleaned = original.split(" ")
-                    .filter { it !in noiseWordsRegex.toString() && !it.matches(yearRegex) }
-                    .take(3)
-                    .joinToString(" ")
-                    .replace("[^a-zA-Z0-9\\s]".toRegex(), " ")
-                    .replace("\\s+", " ")
-                    .trim()
-            }
-
-            Log.d(TAG, "Raw: '$name' → Cleaned: '$cleaned', TV Show: $isTvShow, Season/Episode: $seasonEpisode, Year: $year")
-            return Triple(cleaned, isTvShow, seasonEpisode)
+            Log.d(TAG, "Raw: '$name' → Cleaned: '$finalCleaned', TV Show: $isTvShow, Season/Episode: $seasonEpisode, Year: $year")
+            return Triple(finalCleaned, isTvShow, seasonEpisode)
         }
     }
 
@@ -134,7 +157,7 @@ class VideoListActivity : AppCompatActivity() {
     private val videoList = mutableListOf<VideoItem>()
     private val originalVideoList = mutableListOf<VideoItem>()
     private var isRefreshing = false
-    private var isRegrouping = false // Flag to prevent recursive regrouping
+    private var isRegrouping = false
 
     private val deleteLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
@@ -211,7 +234,6 @@ class VideoListActivity : AppCompatActivity() {
             noVideosText?.visibility = View.GONE
             titleText?.text = "Videos"
 
-            // Set initial view mode from SharedPreferences
             val isGridMode = sharedPref.getBoolean(KEY_VIEW_MODE, true)
             if (isGridMode) {
                 videoAdapter = VideoAdapter(
@@ -219,9 +241,9 @@ class VideoListActivity : AppCompatActivity() {
                     videos = mutableListOf<VideoItem>().apply { addAll(emptyList()) },
                     onClick = { video ->
                         if (video.isSeriesHeader) {
-                            val cleanedTitle = cleanTitleForTmdb(video.title).first
+                            val cleanedTitle = cleanTitleForTmdb(video.title).first.replace("\\s\\d{4}$".toRegex(), "").trim()
                             val episodes = originalVideoList.filter {
-                                val episodeCleanedTitle = cleanTitleForTmdb(it.title).first
+                                val episodeCleanedTitle = cleanTitleForTmdb(it.title).first.replace("\\s\\d{4}$".toRegex(), "").trim()
                                 Log.d(TAG, "Comparing episode title: '$episodeCleanedTitle' with series title: '$cleanedTitle'")
                                 episodeCleanedTitle == cleanedTitle
                             }
@@ -230,9 +252,8 @@ class VideoListActivity : AppCompatActivity() {
                                 Toast.makeText(this, "No episodes found for $cleanedTitle", Toast.LENGTH_SHORT).show()
                                 return@VideoAdapter
                             }
-                            // Validate TMDB titles
                             val mismatchedEpisodes = episodes.filter {
-                                !it.tmdbData?.tvTitle.isNullOrBlank() && it.tmdbData?.tvTitle != cleanedTitle
+                                !it.tmdbData?.tvTitle.isNullOrBlank() && it.tmdbData?.tvTitle?.replace("\\s\\d{4}$".toRegex(), "")?.trim() != cleanedTitle
                             }
                             if (mismatchedEpisodes.isNotEmpty()) {
                                 Log.w(TAG, "Mismatched TMDB titles for '$cleanedTitle': ${mismatchedEpisodes.map { it.tmdbData?.tvTitle }}")
@@ -282,23 +303,29 @@ class VideoListActivity : AppCompatActivity() {
                     videos = mutableListOf<VideoItem>().apply { addAll(emptyList()) },
                     onClick = { video ->
                         if (video.isSeriesHeader) {
-                            val cleanedTitle = video.tmdbData?.tvTitle ?: cleanTitleForTmdb(video.title).first
+                            val cleanedTitle = cleanTitleForTmdb(video.title).first.replace("\\s\\d{4}$".toRegex(), "").trim()
                             val episodes = originalVideoList.filter {
-                                cleanTitleForTmdb(it.title).first == cleanedTitle
+                                val episodeCleanedTitle = cleanTitleForTmdb(it.title).first.replace("\\s\\d{4}$".toRegex(), "").trim()
+                                Log.d(TAG, "Comparing episode title: '$episodeCleanedTitle' with series title: '$cleanedTitle'")
+                                episodeCleanedTitle == cleanedTitle
+                            }
+                            if (episodes.isEmpty()) {
+                                Log.w(TAG, "No episodes found for series '$cleanedTitle'")
+                                Toast.makeText(this, "No episodes found for $cleanedTitle", Toast.LENGTH_SHORT).show()
+                                return@VideoAdapter
                             }
                             val intent = Intent(this, SeriesCollectionActivity::class.java).apply {
-                                putExtra("SERIES_TITLE", video.title)
+                                putExtra("SERIES_TITLE", cleanedTitle)
                                 putParcelableArrayListExtra("EPISODES", ArrayList(episodes))
                             }
                             startActivity(intent)
                             Animatoo.animateCard(this)
-                        }
-                        else {
+                        } else {
                             startActivity(Intent(this, MainActivity::class.java).apply {
                                 putExtra("VIDEO_URI", video.uri.toString())
                                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                             })
-                            Animatoo.animateSwipeLeft(this) // Add swipe left animation
+                            Animatoo.animateSwipeLeft(this)
                         }
                     },
                     updateOriginalList = { newList ->
@@ -349,9 +376,10 @@ class VideoListActivity : AppCompatActivity() {
         }
         Log.d(TAG, "onCreate completed")
     }
+
     override fun onBackPressed() {
         super.onBackPressed()
-        finishAffinity() // Closes the app by finishing all activities
+        finishAffinity()
     }
 
     private fun checkAndRequestPermissions() {
@@ -376,12 +404,12 @@ class VideoListActivity : AppCompatActivity() {
                     "List View" -> {
                         videoAdapter.setGridMode(false)
                         recyclerView?.layoutManager = LinearLayoutManager(this@VideoListActivity)
-                        sharedPref.edit().putBoolean(KEY_VIEW_MODE, false).apply() // Save list mode
+                        sharedPref.edit().putBoolean(KEY_VIEW_MODE, false).apply()
                     }
                     "Grid View" -> {
                         videoAdapter.setGridMode(true)
                         recyclerView?.layoutManager = GridLayoutManager(this@VideoListActivity, 2)
-                        sharedPref.edit().putBoolean(KEY_VIEW_MODE, true).apply() // Save grid mode
+                        sharedPref.edit().putBoolean(KEY_VIEW_MODE, true).apply()
                     }
                     else -> applyFiltersAndSort()
                 }
@@ -461,17 +489,18 @@ class VideoListActivity : AppCompatActivity() {
             try {
                 if (isTvShow && seasonEpisode != null) {
                     Log.d(TAG, "Querying series: '$query', Season ${seasonEpisode.first}, Episode ${seasonEpisode.second}")
-                    val seriesData = TmdbClient.getMediaData(query, true)
+                    var seriesData = TmdbClient.getMediaData(query, true)
                     if (seriesData == null || seriesData.id == 0) {
                         Log.w(TAG, "No series found for '$query'")
-                        attempt++
-                        continue
-                    }
-                    // Log folder name
-                    val folderName = File(query).parentFile?.name
-                    Log.d(TAG, "Folder name for '$query': $folderName")
-                    if (folderName != null && folderName != query && seriesData.tvTitle != query) {
-                        Log.w(TAG, "TMDB title '${seriesData.tvTitle}' differs from query '$query', folder: '$folderName'")
+                        if (query.contains("\\s\\d{4}$".toRegex())) {
+                            val queryWithoutYear = query.replace("\\s\\d{4}$".toRegex(), "").trim()
+                            Log.d(TAG, "Retrying TMDB query without year: '$queryWithoutYear'")
+                            seriesData = TmdbClient.getMediaData(queryWithoutYear, true)
+                        }
+                        if (seriesData == null || seriesData.id == 0) {
+                            attempt++
+                            continue
+                        }
                     }
                     Log.d(TAG, "Series found: title=${seriesData.tvTitle}, id=${seriesData.id}")
                     val episodeData = TmdbClient.getEpisodeData(
@@ -485,7 +514,7 @@ class VideoListActivity : AppCompatActivity() {
                         val posterPath = seasonData?.poster_path ?: seriesData.poster_path
                         return TmdbMovie(
                             movieTitle = episodeData.name,
-                            tvTitle = query, // Use cleaned title
+                            tvTitle = seriesData.tvTitle,
                             overview = episodeData.overview,
                             tvAirDate = episodeData.air_date,
                             vote_average = episodeData.vote_average,
@@ -501,7 +530,12 @@ class VideoListActivity : AppCompatActivity() {
                         continue
                     }
                 } else {
-                    val result = TmdbClient.getMediaData(query, isTvShow)
+                    var result = TmdbClient.getMediaData(query, isTvShow)
+                    if (result == null && !isTvShow && query.contains("\\s\\d{4}$".toRegex())) {
+                        val queryWithoutYear = query.replace("\\s\\d{4}$".toRegex(), "").trim()
+                        Log.d(TAG, "Retrying TMDB query without year: '$queryWithoutYear'")
+                        result = TmdbClient.getMediaData(queryWithoutYear, isTvShow)
+                    }
                     if (result != null) {
                         Log.d(TAG, "Non-episode query succeeded: title=${result.tvTitle ?: result.movieTitle}")
                         return result
@@ -525,7 +559,7 @@ class VideoListActivity : AppCompatActivity() {
                 val posterPath = seasonData?.poster_path ?: seriesData.poster_path
                 return TmdbMovie(
                     movieTitle = query,
-                    tvTitle = query, // Use cleaned title
+                    tvTitle = seriesData.tvTitle,
                     overview = seriesData.overview,
                     tvAirDate = seriesData.tvAirDate,
                     vote_average = seriesData.vote_average,
@@ -571,21 +605,22 @@ class VideoListActivity : AppCompatActivity() {
                     "${MediaStore.Video.Media.DATE_ADDED} DESC"
                 )?.use { cursor ->
                     val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Video.Media._ID)
-                    val nameColumn =
-                        cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
+                    val nameColumn = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DISPLAY_NAME)
                     val dataColumn = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATA)
-                    val dateAddedColumn =
-                        cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
-                    val durationColumn =
-                        cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
+                    val dateAddedColumn = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DATE_ADDED)
+                    val durationColumn = cursor.getColumnIndexOrThrow(MediaStore.Video.Media.DURATION)
 
                     Log.d(TAG, "MediaStore query returned ${cursor.count} videos")
 
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(idColumn)
-                        newVideoIds.add(id)
                         val name = cursor.getString(nameColumn)?.replace("_", " ") ?: continue
                         val data = cursor.getString(dataColumn) ?: continue
+                        if (!name.endsWith(".mkv", ignoreCase = true) && !name.endsWith(".mp4", ignoreCase = true)) {
+                            Log.d(TAG, "Skipped non-video file: $name")
+                            continue
+                        }
+                        newVideoIds.add(id)
                         val dateAdded = cursor.getLong(dateAddedColumn)
                         val duration = cursor.getLong(durationColumn)
                         val uri = ContentUris.withAppendedId(
@@ -596,12 +631,10 @@ class VideoListActivity : AppCompatActivity() {
 
                         val existingVideo = originalVideoList.find { it.id == id }
                         if (existingVideo == null) {
-                            // New video
                             val videoItem = VideoItem(uri, name, id, duration, dateAdded, data)
                             updatedVideos.add(videoItem)
                             hasChanges = true
                         } else if (existingVideo.title != name || existingVideo.path != data || existingVideo.duration != duration) {
-                            // Updated video
                             val updatedVideo = existingVideo.copy(
                                 title = name,
                                 path = data,
@@ -616,7 +649,6 @@ class VideoListActivity : AppCompatActivity() {
                     Log.w(TAG, "MediaStore query returned null cursor")
                 }
 
-                // Check for deleted videos
                 val deletedVideos = originalVideoList.filter { !newVideoIds.contains(it.id) }
                 if (deletedVideos.isNotEmpty()) {
                     hasChanges = true
@@ -642,39 +674,26 @@ class VideoListActivity : AppCompatActivity() {
                             Log.d(TAG, "Updated ${updatedVideos.size} videos")
                         }
 
-                        // Fetch TMDB data for new or updated videos
                         val updateJobs = updatedVideos.map { videoItem ->
                             CoroutineScope(Dispatchers.IO).launch {
-                                val (cleanedName, isTvShow, seasonEpisode) = cleanTitleForTmdb(
-                                    videoItem.title
-                                )
-                                Log.d(
-                                    TAG,
-                                    "Processing video: ${videoItem.title}, Cleaned: '$cleanedName', isTvShow: $isTvShow, Season/Episode: $seasonEpisode"
-                                )
+                                val (cleanedName, isTvShow, seasonEpisode) = cleanTitleForTmdb(videoItem.title)
+                                Log.d(TAG, "Processing video: ${videoItem.title}, Cleaned: '$cleanedName', isTvShow: $isTvShow, Season/Episode: $seasonEpisode")
                                 if (cleanedName.isNotBlank()) {
-                                    val tmdbData =
-                                        retryTmdbQuery(cleanedName, isTvShow, seasonEpisode)
+                                    val tmdbData = retryTmdbQuery(cleanedName, isTvShow, seasonEpisode)
                                     if (tmdbData != null) {
                                         withContext(Dispatchers.Main) {
-                                            val index =
-                                                originalVideoList.indexOfFirst { it.id == videoItem.id }
+                                            val index = originalVideoList.indexOfFirst { it.id == videoItem.id }
                                             if (index != -1) {
-                                                val updatedVideo =
-                                                    videoItem.copy(tmdbData = tmdbData)
+                                                val updatedVideo = videoItem.copy(tmdbData = tmdbData)
                                                 originalVideoList[index] = updatedVideo
-                                                Log.d(
-                                                    TAG,
-                                                    "Updated TMDB data for '${videoItem.title}' at index $index"
-                                                )
-                                                applyFiltersAndSort() // Re-group after TMDB update
+                                                Log.d(TAG, "Updated TMDB data for '${videoItem.title}' at index $index")
+                                                applyFiltersAndSort()
                                             }
                                         }
                                     }
                                 }
                             }
                         }
-
                         updateJobs.forEach { it.join() }
                     }
                 } else {
@@ -693,11 +712,7 @@ class VideoListActivity : AppCompatActivity() {
                         }
                         recyclerView?.visibility = View.GONE
                         titleText?.visibility = View.VISIBLE
-                        Toast.makeText(
-                            this@VideoListActivity,
-                            "No series found",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                        Toast.makeText(this@VideoListActivity, "No series found", Toast.LENGTH_SHORT).show()
                     } else {
                         noVideosText?.visibility = View.GONE
                         recyclerView?.visibility = View.VISIBLE
@@ -715,15 +730,12 @@ class VideoListActivity : AppCompatActivity() {
                     titleText?.visibility = View.VISIBLE
                     swipeRefreshLayout?.isRefreshing = false
                     isRefreshing = false
-                    Toast.makeText(
-                        this@VideoListActivity,
-                        "Error loading videos",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    Toast.makeText(this@VideoListActivity, "Error loading videos", Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
+
     private fun groupVideosBySeries(inputList: MutableList<VideoItem>) {
         videoList.clear()
         val seriesMap = inputList.groupBy {
@@ -741,33 +753,48 @@ class VideoListActivity : AppCompatActivity() {
                 val isSeries = cleanTitleForTmdb(episodes.first().title).second
                 if (isSeries) {
                     val cleanedTitle = cleanTitleForTmdb(episodes.first().title).first
-                    // Validate episode titles
-                    val mismatchedEpisodes = episodes.filter {
-                        cleanTitleForTmdb(it.title).first != cleanedTitle
+                    val validEpisodes = episodes.filter {
+                        val episodeCleanedTitle = cleanTitleForTmdb(it.title).first
+                        val isMatch = episodeCleanedTitle == cleanedTitle
+                        if (!isMatch) {
+                            Log.d(TAG, "Episode title '$episodeCleanedTitle' does not match series '$cleanedTitle'")
+                        }
+                        isMatch
                     }
-                    if (mismatchedEpisodes.isNotEmpty()) {
-                        Log.w(TAG, "Mismatched episodes for series '$cleanedTitle': ${mismatchedEpisodes.map { it.title }}")
+                    if (validEpisodes.isEmpty()) {
+                        Log.w(TAG, "No valid episodes found for series '$cleanedTitle'")
+                        return@forEach
                     }
-                    // Use folder name as fallback if TMDB data is missing
-                    val folderName = File(episodes.first().path).parentFile?.name
-                    val seriesTitle = episodes.first().tmdbData?.tvTitle?.takeIf { it == cleanedTitle } ?: cleanedTitle
+                    Log.d(TAG, "Episodes for series '$cleanedTitle': ${validEpisodes.map { it.title }}")
+                    val folderName = File(validEpisodes.first().path).parentFile?.name
+                    val seriesTitle = validEpisodes.first().tmdbData?.tvTitle?.takeIf { it == cleanedTitle } ?: cleanedTitle
+                    val displayTitle = seriesTitle.replace("\\s\\d{4}$".toRegex(), "").trim()
                     videoList.add(
                         VideoItem(
                             uri = Uri.EMPTY,
-                            title = seriesTitle,
+                            title = displayTitle,
                             id = -1,
                             isSeriesHeader = true,
-                            groupCount = episodes.size,
-                            tmdbData = episodes.first().tmdbData?.copy(season = null, episode = null)
+                            groupCount = validEpisodes.size,
+                            tmdbData = validEpisodes.first().tmdbData?.copy(season = null, episode = null)
                         )
                     )
-                    Log.d(TAG, "Added series header: '$seriesTitle', folder: '$folderName', episodes: ${episodes.size}")
+                    Log.d(TAG, "Added series header: '$displayTitle', folder: '$folderName', episodes: ${validEpisodes.size}")
                 } else {
-                    videoList.addAll(episodes)
+                    episodes.forEach { episode ->
+                        val (cleanedTitle, isTvShow, _) = cleanTitleForTmdb(episode.title)
+                        if (!isTvShow) {
+                            videoList.add(episode)
+                            Log.d(TAG, "Added non-series video: '${episode.title}'")
+                        } else {
+                            Log.w(TAG, "Skipping misidentified series video: '${episode.title}'")
+                        }
+                    }
                 }
             }
         }
     }
+
     @RequiresApi(Build.VERSION_CODES.R)
     private fun showDeleteConfirmation(video: VideoItem) {
         AlertDialog.Builder(this)
@@ -909,8 +936,7 @@ class VideoListActivity : AppCompatActivity() {
         val isSeriesHeader: Boolean = false,
         val groupCount: Int = 0,
         val tmdbData: TmdbMovie? = null
-    ) :
-        Parcelable {
+    ) : Parcelable {
         constructor(parcel: Parcel) : this(
             uri = parcel.readParcelable(Uri::class.java.classLoader)!!,
             title = parcel.readString()!!,
@@ -1014,40 +1040,47 @@ class VideoListActivity : AppCompatActivity() {
                     is HeaderViewHolder -> {
                         holder.title.text = video.title
                         holder.count.text = "${video.groupCount} videos"
-                        loadTmdbPoster(holder.thumbnail, video.tmdbData?.poster_path, video.title)
+                        loadTmdbPoster(holder.thumbnail, video.tmdbData?.poster_path, video.title, video.uri, video.id, video.path)
                         holder.itemView.setOnClickListener { onClick(video) }
                     }
 
                     is ListViewHolder -> {
                         val title = buildString {
+                            val (cleanedTitle, isTvShow, seasonEpisode) = cleanTitleForTmdb(video.title)
                             val baseTitle = if (context is SeriesCollectionActivity && video.tmdbData?.media_type == "tv" && video.tmdbData.episode != null) {
-                                video.tmdbData.movieTitle ?: video.title.replace("_", " ") // Use episode name
+                                video.tmdbData.movieTitle ?: cleanedTitle.replace("\\s\\d{4}$".toRegex(), "").trim()
                             } else {
-                                video.tmdbData?.displayTitle?.replace("_", " ") ?: video.title.replace("_", " ")
+                                (video.tmdbData?.displayTitle ?: cleanedTitle).replace("\\s\\d{4}$".toRegex(), "").replace("_", " ").trim()
                             }
                             append(baseTitle)
                             if (video.tmdbData?.season != null && video.tmdbData.episode != null) {
                                 append(" – S%02dE%02d".format(video.tmdbData.season, video.tmdbData.episode))
+                            } else if (isTvShow && seasonEpisode != null) {
+                                append(" – S%02dE%02d".format(seasonEpisode.first, seasonEpisode.second))
                             }
                         }
                         holder.title.text = title
                         holder.duration.text = formatDuration(video.duration)
                         holder.releaseDate.text = video.tmdbData?.displayDate ?: "N/A"
                         holder.rating.text = video.tmdbData?.vote_average?.let { "Rating: $it/10" } ?: "Rating: N/A"
-                        loadTmdbPoster(holder.thumbnail, video.tmdbData?.poster_path, video.tmdbData?.displayTitle ?: video.title)
+                        loadTmdbPoster(holder.thumbnail, video.tmdbData?.poster_path, video.tmdbData?.displayTitle ?: video.title, video.uri, video.id, video.path)
                         holder.itemView.setOnClickListener { if (!video.isHeader && !video.isSeriesHeader) onClick(video) }
                         setupMoreIcon(holder.moreIcon, video, position)
                     }
+
                     is GridViewHolder -> {
                         val title = buildString {
+                            val (cleanedTitle, isTvShow, seasonEpisode) = cleanTitleForTmdb(video.title)
                             val baseTitle = if (context is SeriesCollectionActivity && video.tmdbData?.media_type == "tv" && video.tmdbData.episode != null) {
-                                video.tmdbData.movieTitle ?: video.title.replace("_", " ") // Use episode name
+                                video.tmdbData.movieTitle ?: cleanedTitle.replace("\\s\\d{4}$".toRegex(), "").trim()
                             } else {
-                                video.tmdbData?.displayTitle?.replace("_", " ") ?: video.title.replace("_", " ")
+                                (video.tmdbData?.displayTitle ?: cleanedTitle).replace("\\s\\d{4}$".toRegex(), "").replace("_", " ").trim()
                             }
                             append(baseTitle)
                             if (video.tmdbData?.season != null && video.tmdbData.episode != null) {
                                 append(" – S%02dE%02d".format(video.tmdbData.season, video.tmdbData.episode))
+                            } else if (isTvShow && seasonEpisode != null) {
+                                append(" – S%02dE%02d".format(seasonEpisode.first, seasonEpisode.second))
                             }
                             if (video.isSeriesHeader) {
                                 append(" (${video.groupCount} videos)")
@@ -1056,7 +1089,7 @@ class VideoListActivity : AppCompatActivity() {
                         holder.title.text = title
                         holder.releaseDate.text = video.tmdbData?.displayDate ?: "N/A"
                         holder.rating.text = video.tmdbData?.vote_average?.let { "Rating: $it/10" } ?: "Rating: N/A"
-                        loadTmdbPoster(holder.thumbnail, video.tmdbData?.poster_path, video.tmdbData?.displayTitle ?: video.title)
+                        loadTmdbPoster(holder.thumbnail, video.tmdbData?.poster_path, video.tmdbData?.displayTitle ?: video.title, video.uri, video.id, video.path)
                         holder.itemView.setOnClickListener { onClick(video) }
                         setupMoreIcon(holder.moreIcon, video, position)
                     }
@@ -1066,37 +1099,86 @@ class VideoListActivity : AppCompatActivity() {
             }
         }
 
-        private fun loadTmdbPoster(imageView: ImageView, posterPath: String?, videoTitle: String) {
+        private fun loadTmdbPoster(imageView: ImageView, posterPath: String?, videoTitle: String, videoUri: Uri? = null, videoId: Long? = null, videoPath: String? = null) {
             try {
                 if (posterPath != null && posterPath.isNotEmpty()) {
                     val imageUrl = "${TmdbClient.IMAGE_BASE_URL}$posterPath"
-                    Log.d(TAG, "Loading poster for '$videoTitle': $imageUrl")
+                    Log.d(TAG, "Loading TMDB poster for '$videoTitle': $imageUrl")
                     Glide.with(context)
                         .load(imageUrl)
                         .placeholder(R.drawable.placeholder)
                         .error(R.drawable.placeholder)
-                        .apply(RequestOptions()
-                            .override(300, 450)
-                            .centerCrop())
+                        .apply(RequestOptions().override(300, 450).centerCrop())
                         .dontAnimate()
                         .into(imageView)
                 } else {
-                    Log.d(TAG, "No poster path for '$videoTitle', using placeholder")
-                    Glide.with(context)
-                        .load(R.drawable.placeholder)
-                        .apply(RequestOptions()
-                            .override(300, 450)
-                            .centerCrop())
-                        .dontAnimate()
-                        .into(imageView)
+                    Log.d(TAG, "No TMDB poster for '$videoTitle', attempting to load video thumbnail")
+                    if (videoUri != null && videoId != null) {
+                        val thumbnailUri = ContentUris.withAppendedId(
+                            MediaStore.Video.Thumbnails.EXTERNAL_CONTENT_URI,
+                            videoId
+                        )
+                        Log.d(TAG, "Attempting to load MediaStore thumbnail for '$videoTitle': $thumbnailUri")
+                        Glide.with(context)
+                            .load(thumbnailUri)
+                            .placeholder(R.drawable.placeholder)
+                            .error {
+                                Log.w(TAG, "MediaStore thumbnail failed for '$videoTitle', trying MediaMetadataRetriever")
+                                if (videoPath != null) {
+                                    try {
+                                        val retriever = MediaMetadataRetriever()
+                                        retriever.setDataSource(context, videoUri)
+                                        val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST)
+                                        retriever.release()
+                                        if (bitmap != null) {
+                                            Log.d(TAG, "Successfully extracted thumbnail for '$videoTitle' using MediaMetadataRetriever")
+                                            Glide.with(context)
+                                                .load(bitmap)
+                                                .apply(RequestOptions().override(300, 450).centerCrop())
+                                                .dontAnimate()
+                                                .into(imageView)
+                                        } else {
+                                            Log.w(TAG, "No thumbnail extracted for '$videoTitle', using placeholder")
+                                            Glide.with(context)
+                                                .load(R.drawable.placeholder)
+                                                .apply(RequestOptions().override(300, 450).centerCrop())
+                                                .dontAnimate()
+                                                .into(imageView)
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "MediaMetadataRetriever failed for '$videoTitle': ${e.message}", e)
+                                        Glide.with(context)
+                                            .load(R.drawable.placeholder)
+                                            .apply(RequestOptions().override(300, 450).centerCrop())
+                                            .dontAnimate()
+                                            .into(imageView)
+                                    }
+                                } else {
+                                    Log.w(TAG, "No video path provided for '$videoTitle', using placeholder")
+                                    Glide.with(context)
+                                        .load(R.drawable.placeholder)
+                                        .apply(RequestOptions().override(300, 450).centerCrop())
+                                        .dontAnimate()
+                                        .into(imageView)
+                                }
+                            }
+                            .apply(RequestOptions().override(300, 450).centerCrop())
+                            .dontAnimate()
+                            .into(imageView)
+                    } else {
+                        Log.w(TAG, "No video URI/ID provided for '$videoTitle', using placeholder")
+                        Glide.with(context)
+                            .load(R.drawable.placeholder)
+                            .apply(RequestOptions().override(300, 450).centerCrop())
+                            .dontAnimate()
+                            .into(imageView)
+                    }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error loading poster for '$videoTitle': ${e.message}", e)
+                Log.e(TAG, "Error loading image for '$videoTitle': ${e.message}", e)
                 Glide.with(context)
                     .load(R.drawable.placeholder)
-                    .apply(RequestOptions()
-                        .override(300, 450)
-                        .centerCrop())
+                    .apply(RequestOptions().override(300, 450).centerCrop())
                     .dontAnimate()
                     .into(imageView)
             }
@@ -1241,11 +1323,26 @@ class VideoListActivity : AppCompatActivity() {
                                 .dontAnimate()
                                 .into(posterImageView)
                         } else {
-                            Log.d(TAG, "No poster for '${tmdbData.displayTitle}', using placeholder")
-                            Glide.with(context)
-                                .load(R.drawable.placeholder)
-                                .dontAnimate()
-                                .into(posterImageView)
+                            Log.d(TAG, "No TMDB poster for '${tmdbData.displayTitle}', attempting to load video thumbnail")
+                            if (video.uri != null && video.id != null) {
+                                val thumbnailUri = ContentUris.withAppendedId(
+                                    MediaStore.Video.Thumbnails.EXTERNAL_CONTENT_URI,
+                                    video.id
+                                )
+                                Glide.with(context)
+                                    .load(thumbnailUri)
+                                    .placeholder(R.drawable.placeholder)
+                                    .error(R.drawable.placeholder)
+                                    .dontAnimate()
+                                    .into(posterImageView)
+                                Log.d(TAG, "Loading video thumbnail for '${tmdbData.displayTitle}': $thumbnailUri")
+                            } else {
+                                Log.d(TAG, "No video URI/ID for '${tmdbData.displayTitle}', using placeholder")
+                                Glide.with(context)
+                                    .load(R.drawable.placeholder)
+                                    .dontAnimate()
+                                    .into(posterImageView)
+                            }
                         }
                     } else {
                         dialogView.findViewById<TextView>(R.id.tmdb_title).text =
@@ -1255,7 +1352,26 @@ class VideoListActivity : AppCompatActivity() {
                         dialogView.findViewById<TextView>(R.id.tmdb_rating).text = "Not rated"
                         dialogView.findViewById<TextView>(R.id.tmdb_overview).text =
                             "No metadata available for this video."
-                        dialogView.findViewById<ImageView>(R.id.tmdb_poster).setImageResource(R.drawable.placeholder)
+                        val posterImageView = dialogView.findViewById<ImageView>(R.id.tmdb_poster)
+                        if (video.uri != null && video.id != null) {
+                            val thumbnailUri = ContentUris.withAppendedId(
+                                MediaStore.Video.Thumbnails.EXTERNAL_CONTENT_URI,
+                                video.id
+                            )
+                            Glide.with(context)
+                                .load(thumbnailUri)
+                                .placeholder(R.drawable.placeholder)
+                                .error(R.drawable.placeholder)
+                                .dontAnimate()
+                                .into(posterImageView)
+                            Log.d(TAG, "Loading video thumbnail for '${video.title}': $thumbnailUri")
+                        } else {
+                            Log.d(TAG, "No video URI/ID for '${video.title}', using placeholder")
+                            Glide.with(context)
+                                .load(R.drawable.placeholder)
+                                .dontAnimate()
+                                .into(posterImageView)
+                        }
                     }
 
                     dialog.show()

@@ -7,6 +7,9 @@ pluginManagement {
                 includeGroupByRegex("androidx.*")
             }
         }
+        flatDir {
+            dirs("libs")
+        }
         mavenCentral()
         gradlePluginPortal()
     }
@@ -21,4 +24,3 @@ dependencyResolutionManagement {
 
 rootProject.name = "Video Player"
 include(":app")
- 

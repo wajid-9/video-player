@@ -52,4 +52,5 @@
     <item name="unlockIcon" type="id" />
     <item name="tmdb_overview" type="id" />
     <item name="tmdb_rating" type="id" />
+    <item name="tmdb_rating_icon" type="id" />
 </resources>
